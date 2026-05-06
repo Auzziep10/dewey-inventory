@@ -18,6 +18,10 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   if (user && userData?.role === 'Client') {
     return <Navigate to="/login" />;
   }
+
+  if (!user) {
+    return <Navigate to="/login" />;
+  }
   
   return <>{children}</>;
 }
