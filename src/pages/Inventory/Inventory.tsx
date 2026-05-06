@@ -1,0 +1,1827 @@
+import { useState, useEffect, Suspense, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import * as THREE from 'three';
+import { tokens } from '../../lib/tokens';
+import { PackageOpen, Printer, Boxes, Map, QrCode, Settings, Upload, Search } from 'lucide-react';
+import QRCode from 'react-qr-code';
+import { Canvas, useFrame } from '@react-three/fiber';
+import { OrbitControls } from '@react-three/drei';
+import { db, storage } from '../../lib/firebase';
+import { collection, query, onSnapshot, setDoc, deleteDoc, doc, getDocs } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+// import { ProductsTab } from './ProductsTab';
+import { PalletsTab } from './PalletsTab';
+import { EventsTab } from './EventsTab';
+import { CheckInOutTab } from './CheckInOutTab';
+
+const PALLET_SWATCHES = [
+  '#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', 
+  '#ec4899', '#06b6d4', '#f97316', '#84cc16', '#64748b'
+];
+
+function CameraController({ activePallet, activeRack, warehouse }: any) {
+  const targetLookAt = useRef<THREE.Vector3 | null>(null);
+  const targetCamPos = useRef<THREE.Vector3 | null>(null);
+
+  useEffect(() => {
+    if (!activePallet && !activeRack) return;
+
+    let lookPos = new THREE.Vector3();
+    let hasTarget = false;
+
+    if (activePallet) {
+      if (activePallet.zone === 'Floor' && activePallet.position) {
+         lookPos.set(activePallet.position[0], activePallet.position[1], activePallet.position[2]);
+         hasTarget = true;
+      } else if (activePallet.rackSpecs && activePallet.zone !== 'Floor') {
+         const rack = warehouse?.racks?.find((r: any) => r.label === activePallet.zone);
+         if (rack) {
+            // Rough approximation of rack position
+            lookPos.set(rack.position[0], rack.position[1] + (activePallet.rackSpecs.level * 1.2), rack.position[2]);
+            hasTarget = true;
+         }
+      }
+    } else if (activeRack) {
+      const rack = warehouse?.racks?.find((r: any) => r.label === activeRack);
+      if (rack) {
+         lookPos.set(rack.position[0], rack.position[1], rack.position[2]);
+         hasTarget = true;
+      }
+    }
+
+    if (hasTarget) {
+      targetLookAt.current = lookPos;
+      // Position camera above and slightly pulled back from the pallet
+      targetCamPos.current = new THREE.Vector3(lookPos.x, lookPos.y + 4, lookPos.z + 8);
+    }
+  }, [activePallet, activeRack, warehouse]);
+
+  useFrame((state, delta) => {
+    const ctrl = state.controls as any;
+    if (targetLookAt.current && targetCamPos.current && ctrl) {
+      if (!isNaN(targetCamPos.current.x) && !isNaN(targetCamPos.current.y) && !isNaN(targetCamPos.current.z) &&
+          !isNaN(targetLookAt.current.x) && !isNaN(targetLookAt.current.y) && !isNaN(targetLookAt.current.z)) {
+          // Smoothly interpolate camera position
+          state.camera.position.lerp(targetCamPos.current, delta * 3);
+          // Smoothly interpolate controls target
+          ctrl.target.lerp(targetLookAt.current, delta * 3);
+          ctrl.update();
+          
+          // Clear targets once close enough
+          if (state.camera.position.distanceTo(targetCamPos.current) < 0.1) {
+             targetLookAt.current = null;
+             targetCamPos.current = null;
+          }
+      } else {
+          // Reset targets if NaN encountered
+          targetLookAt.current = null;
+          targetCamPos.current = null;
+      }
+    }
+  });
+
+  return null;
+}
+
+const PalletLabels = ({ }: any) => {
+    return (
+        <group>
+        </group>
+    );
+};
+
+const ActiveIndicator = ({ height }: { height: number }) => {
+    const groupRef = useRef<THREE.Group>(null);
+    useFrame((state) => {
+        if (groupRef.current) {
+            groupRef.current.position.y = height + 0.5 + Math.sin(state.clock.elapsedTime * 5) * 0.1;
+            groupRef.current.rotation.y = state.clock.elapsedTime * 2;
+        }
+    });
+
+    return (
+        <group ref={groupRef}>
+            <mesh rotation={[Math.PI, 0, 0]}>
+                <coneGeometry args={[0.25, 0.5, 4]} />
+                <meshStandardMaterial color="#10b981" emissive="#10b981" emissiveIntensity={1} />
+            </mesh>
+        </group>
+    );
+};
+
+const getPalletDimensions = (pallet: any) => {
+    let rawH = parseFloat(pallet.dimensions?.height || pallet.height);
+    let rawW = parseFloat(pallet.dimensions?.width);
+    let rawD = parseFloat(pallet.dimensions?.depth);
+
+    if (pallet.type === 'Road Case' || pallet.type === 'Pallet') {
+        if (!isNaN(rawH)) rawH *= 0.3048;
+        if (!isNaN(rawW)) rawW *= 0.3048;
+        if (!isNaN(rawD)) rawD *= 0.3048;
+    } else if (pallet.type === 'Box') {
+        if (!isNaN(rawH)) rawH *= 0.0254;
+        if (!isNaN(rawW)) rawW *= 0.0254;
+        if (!isNaN(rawD)) rawD *= 0.0254;
+    } else {
+        // Legacy or standard WOVN pallets: if dimensions > 10, they were likely entered in inches (e.g. 48).
+        if (!isNaN(rawH) && rawH >= 10) rawH *= 0.0254;
+        if (!isNaN(rawW) && rawW >= 10) rawW *= 0.0254;
+        if (!isNaN(rawD) && rawD >= 10) rawD *= 0.0254;
+    }
+
+    const pHeight = Math.min(5.0, isNaN(rawH) ? 0.8 : rawH);
+    const pWidth = Math.min(5.0, isNaN(rawW) ? 1.2 : rawW);
+    const pDepth = Math.min(5.0, isNaN(rawD) ? 1.2 : rawD);
+
+    return { pWidth, pHeight, pDepth };
+};
+
+const PayloadMesh = ({ pallet, isThisPalletActive }: any) => {
+    const { pWidth, pHeight, pDepth } = getPalletDimensions(pallet);
+    
+    if (pallet.type === 'Road Case') {
+        return (
+            <group>
+                <mesh position={[0, Math.max(0.01, pHeight)/2, 0]}>
+                    <boxGeometry args={[Math.max(0.01, pWidth), Math.max(0.01, pHeight), Math.max(0.01, pDepth)]} />
+                    <meshStandardMaterial color="#1a1a1a" roughness={0.7} metalness={0.2} emissive={isThisPalletActive ? "#333" : "#000"} emissiveIntensity={isThisPalletActive ? 0.5 : 0} />
+                </mesh>
+                {/* Silver edges/accents */}
+                <mesh position={[0, Math.max(0.01, pHeight)/2, 0]}>
+                    <boxGeometry args={[Math.max(0.01, pWidth + 0.02), Math.max(0.01, pHeight + 0.02), Math.max(0.01, pDepth + 0.02)]} />
+                    <meshStandardMaterial color="#e5e7eb" wireframe metalness={0.8} roughness={0.2} />
+                </mesh>
+                {isThisPalletActive && (
+                    <>
+                        <mesh position={[0, Math.max(0.01, pHeight)/2, 0]}>
+                            <boxGeometry args={[Math.max(0.01, pWidth + 0.1), Math.max(0.01, pHeight + 0.1), Math.max(0.01, pDepth + 0.1)]} />
+                            <meshStandardMaterial color="#fff" wireframe emissive="#fff" emissiveIntensity={1.5} transparent opacity={0.8} />
+                        </mesh>
+                        <ActiveIndicator height={Math.max(0.01, pHeight)} />
+                    </>
+                )}
+            </group>
+        );
+    }
+    
+    if (pallet.type === 'Pallet' || pallet.boxes?.length > 0) {
+        const boxes = [];
+        const boxSize = 0.28;
+        const spacing = 0.02;
+        const cols = Math.max(1, Math.floor((pWidth - spacing) / (boxSize + spacing)));
+        const rows = Math.max(1, Math.floor((pDepth - spacing) / (boxSize + spacing)));
+        const stackLevels = Math.min(5, Math.max(1, Math.floor((pHeight - 0.14) / (boxSize + spacing))));
+        const startY = -pHeight/2 + 0.14 + (boxSize/2);
+        
+        const gridW = cols * boxSize + (cols - 1) * spacing;
+        const gridD = rows * boxSize + (rows - 1) * spacing;
+        
+        for (let l = 0; l < stackLevels; l++) {
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const rx = (Math.random() - 0.5) * 0.01;
+                    const rz = (Math.random() - 0.5) * 0.01;
+                    const x = (c * boxSize) + (c * spacing) - (gridW/2) + (boxSize/2) + rx;
+                    const z = (r * boxSize) + (r * spacing) - (gridD/2) + (boxSize/2) + rz;
+                    const y = startY + (l * boxSize) + (l * spacing);
+                    
+                    boxes.push(
+                        <mesh key={`${pallet.id}-${l}-${r}-${c}`} position={[x, y, z]}>
+                            <boxGeometry args={[boxSize, boxSize, boxSize]} />
+                            <meshStandardMaterial color={pallet.color || '#d4a373'} emissive={isThisPalletActive ? pallet.color || '#d4a373' : "#000"} emissiveIntensity={isThisPalletActive ? 0.4 : 0} />
+                        </mesh>
+                    );
+                }
+            }
+        }
+        return (
+            <group>
+                {boxes}
+                {isThisPalletActive && (
+                    <>
+                        <mesh position={[0, Math.max(0.01, pHeight)/2 - 0.14, 0]}>
+                            <boxGeometry args={[Math.max(0.01, pWidth + 0.05), Math.max(0.01, pHeight + 0.1), Math.max(0.01, pDepth + 0.05)]} />
+                            <meshStandardMaterial color="#fff" wireframe emissive="#fff" emissiveIntensity={1.5} transparent opacity={0.8} />
+                        </mesh>
+                        <ActiveIndicator height={Math.max(0.01, pHeight)} />
+                    </>
+                )}
+            </group>
+        );
+    }
+    
+    return (
+       <group>
+           <mesh position={[0, 0.07, 0]}>
+             <boxGeometry args={[Math.max(0.01, pWidth - 0.05), Math.max(0.01, pHeight - 0.14), Math.max(0.01, pDepth - 0.05)]} />
+             <meshStandardMaterial color={pallet.color || '#3b82f6'} emissive={isThisPalletActive ? pallet.color || '#3b82f6' : "#000"} emissiveIntensity={isThisPalletActive ? 0.4 : 0} />
+           </mesh>
+           {isThisPalletActive && (
+               <>
+                   <mesh position={[0, Math.max(0.01, pHeight)/2 - 0.14, 0]}>
+                       <boxGeometry args={[Math.max(0.01, pWidth + 0.05), Math.max(0.01, pHeight + 0.1), Math.max(0.01, pDepth + 0.05)]} />
+                       <meshStandardMaterial color="#fff" wireframe emissive="#fff" emissiveIntensity={1.5} transparent opacity={0.8} />
+                   </mesh>
+                   <ActiveIndicator height={Math.max(0.01, pHeight)} />
+               </>
+           )}
+       </group>
+    );
+};
+
+
+function Rack({ position, rotation = [0,0,0], bays = 2, levels = 2, slots = 3, color = '#2b4478', label = "Rack", type = "Pallet", onClick, isActive, onPalletClick, activePallet, inventory = [], isAddingPallet, addForm }: any) {
+  const rackSlots = Number(slots) || 3;
+  const isBoxRack = type === 'Box';
+  const width = isBoxRack ? 1.5 : (rackSlots === 3 ? 4.0 : 2.8); // Width per bay (accommodates 1.2m base)
+  const depth = isBoxRack ? 0.6 : 1.3;
+  const height = isBoxRack ? 1.8 : 2.4; 
+  const totalWidth = width * bays;
+  
+  const baseColor = isBoxRack ? '#9ca3af' : color;
+  const upColor = isActive ? '#10b981' : baseColor;
+  const beamColor = isBoxRack ? '#d1d5db' : '#eb7023';
+
+  const uprights: any[] = [];
+  const beams: any[] = [];
+  const pallets: any[] = [];
+
+  // Build components geometrically
+  for (let i = 0; i <= bays; i++) {
+    const xPos = (i * width) - (totalWidth / 2);
+    // front-left upright
+    uprights.push(<mesh key={`ul_${i}`} position={[xPos, height/2, depth/2 - 0.05]}><boxGeometry args={[0.1, height, 0.1]} /><meshStandardMaterial color={upColor} /></mesh>);
+    // back-left upright
+    uprights.push(<mesh key={`ub_${i}`} position={[xPos, height/2, -depth/2 + 0.05]}><boxGeometry args={[0.1, height, 0.1]} /><meshStandardMaterial color={upColor} /></mesh>);
+    // cross braces
+    for (let h = 0.5; h < height; h += isBoxRack ? 0.5 : 0.8) {
+       uprights.push(<mesh key={`uc_${i}_${h}`} position={[xPos, h, 0]} rotation={[0.45, 0, 0]}><boxGeometry args={[0.04, depth, 0.04]} /><meshStandardMaterial color={upColor} /></mesh>);
+    }
+  }
+
+  for (let bay = 0; bay < bays; bay++) {
+    const xCenter = (bay * width) + (width / 2) - (totalWidth / 2);
+    
+    for (let l = 1; l <= levels; l++) {
+      const yPos = (l * (height / levels)) - 0.06;
+      beams.push(<mesh key={`bf_${bay}_${l}`} position={[xCenter, yPos, depth/2]}><boxGeometry args={[width, 0.12, 0.05]} /><meshStandardMaterial color={beamColor} /></mesh>);
+      beams.push(<mesh key={`bb_${bay}_${l}`} position={[xCenter, yPos, -depth/2]}><boxGeometry args={[width, 0.12, 0.05]} /><meshStandardMaterial color={beamColor} /></mesh>);
+      // For box racks, add wire shelf plane
+      if (isBoxRack) {
+          beams.push(<mesh key={`bw_${bay}_${l}`} position={[xCenter, yPos + 0.05, 0]} rotation={[-Math.PI/2, 0, 0]}><planeGeometry args={[width, depth]} /><meshStandardMaterial color="#e5e7eb" transparent opacity={0.6} side={2} /></mesh>);
+      }
+    }
+  }
+
+  // Render pallets dynamically from the provided inventory subset for this rack
+  inventory.forEach((pallet: any) => {
+    if (!pallet.rackSpecs) return;
+    const { bay, level, slot } = pallet.rackSpecs;
+    if (bay >= bays || level >= levels) return; // Prevent out of bounds rendering if data expands
+
+    const xCenter = (bay * width) + (width / 2) - (totalWidth / 2);
+    const isFloor = (level === 0);
+    const beamY = isFloor ? 0 : (level * (height / levels)) - 0.06; 
+    const restY = isFloor ? 0 : beamY + 0.06;
+    
+    // Scale payload down slightly if on a box rack
+    const scaleFactor = isBoxRack ? 0.6 : 1;
+    const { pWidth, pHeight, pDepth } = getPalletDimensions(pallet);
+    const pY = restY + (pHeight * scaleFactor) / 2;
+    const pX = xCenter + (slot * width / (rackSlots === 3 ? 3 : 4));
+    
+    const isThisPalletActive = activePallet?.id === pallet.id;
+
+    pallets.push(
+      <group 
+        key={pallet.id} 
+        position={[pX, pY, 0]}
+        scale={scaleFactor}
+        onClick={(e) => { if (e.delta > 2) return; e.stopPropagation(); onPalletClick?.(pallet); }}
+      >
+        <PalletLabels pallet={pallet} />
+        {(!isBoxRack && pallet.type !== 'Road Case') && (
+          <mesh position={[0, -pHeight/2 + 0.07, 0]}>
+            <boxGeometry args={[Math.max(0.01, pWidth), 0.14, Math.max(0.01, pDepth)]} />
+            <meshStandardMaterial color="#8b5a2b" emissive={isThisPalletActive ? "#fff" : "#000"} emissiveIntensity={isThisPalletActive ? 0.3 : 0} />
+          </mesh>
+        )}
+        <PayloadMesh pallet={pallet} isThisPalletActive={isThisPalletActive} />
+      </group>
+    );
+  });
+
+  if (isAddingPallet && addForm?.zoneType === 'Rack' && addForm?.rackLabel === label) {
+      const bay = parseInt(addForm.bay) || 0;
+      const level = parseInt(addForm.level) || 0;
+      const slot = parseInt(addForm.slot) || -1;
+      
+      const xCenter = (bay * width) + (width / 2) - (totalWidth / 2);
+      const isFloor = (level === 0);
+      const beamY = isFloor ? 0 : (level * (height / levels)) - 0.06; 
+      const restY = isFloor ? 0 : beamY + 0.06;
+      
+      const scaleFactor = isBoxRack ? 0.6 : 1;
+      const stdHeight = 0.8 * scaleFactor;
+      const pY = restY + stdHeight / 2; 
+      const pX = xCenter + (slot * width / (rackSlots === 3 ? 3 : 4));
+      
+      pallets.push(
+        <mesh key="ghost-staging" position={[pX, pY, 0]}>
+            <boxGeometry args={[1 * scaleFactor, stdHeight, 1 * scaleFactor]} />
+            <meshStandardMaterial color={addForm.color || "#10b981"} transparent opacity={0.6} emissive={addForm.color || "#10b981"} emissiveIntensity={0.6} depthWrite={false} />
+        </mesh>
+      );
+  }
+
+  return (
+    <group position={position} rotation={rotation} 
+      onClick={(e) => { if (e.delta > 2) return; e.stopPropagation(); onClick?.(label); onPalletClick?.(null); }} 
+      onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor='pointer'; }} 
+      onPointerOut={() => document.body.style.cursor='auto'}
+    >
+      {uprights}
+      {beams}
+      {pallets}
+    </group>
+  );
+}
+
+function FloorPallet({ pallet, onClick, onPalletClick, activePallet }: any) {
+  const isThisPalletActive = activePallet?.id === pallet.id;
+  const { pWidth, pHeight, pDepth } = getPalletDimensions(pallet);
+  const pY = pHeight / 2;
+  const posX = pallet.position && !isNaN(pallet.position[0]) ? pallet.position[0] : 0;
+  const posY = pallet.position && !isNaN(pallet.position[1]) ? pallet.position[1] : 0;
+  const posZ = pallet.position && !isNaN(pallet.position[2]) ? pallet.position[2] : 0;
+  const rot = pallet.rotation || [0,0,0];
+
+  return (
+    <group position={[posX, posY + pY, posZ]} rotation={rot} 
+      onClick={(e) => { if (e.delta > 2) return; e.stopPropagation(); onClick?.(null); onPalletClick?.(pallet); }}
+      onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor='pointer'; }}
+      onPointerOut={() => document.body.style.cursor='auto'}
+    >
+      <group scale={[1.3, 1.3, 1.3]}>
+         <PalletLabels pallet={pallet} />
+      </group>
+      {pallet.type !== 'Road Case' && (
+          <mesh position={[0, -pHeight/2 + 0.07, 0]}>
+            <boxGeometry args={[Math.max(0.01, pWidth), 0.14, Math.max(0.01, pDepth)]} />
+            <meshStandardMaterial color="#8b5a2b" emissive={isThisPalletActive ? "#fff" : "#000"} emissiveIntensity={isThisPalletActive ? 0.3 : 0} />
+          </mesh>
+      )}
+      <PayloadMesh pallet={pallet} isThisPalletActive={isThisPalletActive} />
+    </group>
+  );
+}
+
+function WarehouseMap({ activeRack, setActiveRack, activePallet, setActivePallet, inventory, warehouse, isAddingPallet, addForm, setAddForm }: any) {
+  const rackProps = {
+     onClick: setActiveRack,
+     activeRack,
+     onPalletClick: setActivePallet,
+     activePallet,
+     isAddingPallet,
+      addForm
+   };
+   
+   const isOrbitEnabled = true;
+   
+   const getRackInventory = (zone: string) => inventory.filter((p: any) => p.zone === zone);
+  const floorInventory = inventory.filter((p: any) => p.zone === 'Floor');
+  
+  const isRackHighlighted = (label: string) => {
+     if (activeRack === label) return true;
+     if (isAddingPallet && addForm?.zoneType === 'Rack' && addForm?.rackLabel === label) return true;
+     return false;
+  };
+
+  const handleFloorClick = (e: any) => {
+     if (e.delta > 2) return;
+     e.stopPropagation();
+     if (isAddingPallet) {
+         // Snap to nearest 0.5 coordinate for grid alignment
+         const snapX = Math.round(e.point.x * 2) / 2;
+         const snapZ = Math.round(e.point.z * 2) / 2;
+         setAddForm((prev: any) => ({ ...prev, x: snapX, z: snapZ }));
+     } else {
+         setActiveRack(null); 
+         setActivePallet(null); 
+     }
+  };
+
+  return (
+    <div className="w-full h-full bg-brand-bg rounded-2xl overflow-hidden relative border border-brand-border/50 shadow-inner">
+      <div className="absolute top-4 left-4 z-10 bg-white/90 backdrop-blur-sm p-4 rounded-xl border border-brand-border/50 shadow-sm pointer-events-none">
+         <h3 className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1">Live Map 3D</h3>
+         <p className="text-sm font-semibold text-brand-primary font-serif">South Camera View</p>
+      </div>
+
+      <Canvas camera={{ position: [0, 20, 26], fov: 42 }}>
+        <CameraController activePallet={activePallet} activeRack={activeRack} warehouse={warehouse} />
+        <ambientLight intensity={0.6} />
+        <directionalLight position={[10, 20, 10]} intensity={1.5} />
+        <OrbitControls 
+          enablePan={true} 
+          enableZoom={true} 
+          enableRotate={true}
+          enabled={isOrbitEnabled}
+          maxPolarAngle={Math.PI / 2 - 0.05} // lock angle to prevent dipping below the concrete floor
+        />
+
+        {/* Complete True-Scale Concrete Floor */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow onClick={handleFloorClick} 
+              onPointerOver={(e) => { if (isAddingPallet) { e.stopPropagation(); document.body.style.cursor = 'crosshair'; } }}
+              onPointerOut={() => { document.body.style.cursor = 'auto'; }}
+        >
+          <planeGeometry args={[warehouse?.dimensions?.width || 100, warehouse?.dimensions?.depth || 100]} />
+          <meshStandardMaterial color={isAddingPallet ? "#e2e8f0" : "#f0f2f5"} />
+        </mesh>
+        
+        {/* Dynamic Interactive Snapping Grid shown when placing */}
+        {isAddingPallet && (
+            <group>
+               <gridHelper args={[Math.max(warehouse?.dimensions?.width || 40, warehouse?.dimensions?.depth || 40), Math.max(warehouse?.dimensions?.width || 40, warehouse?.dimensions?.depth || 40), '#a1a1aa', '#d4d4d8']} position={[0, 0.02, 0]} />
+               {addForm?.zoneType === 'Floor' && (
+                  <mesh position={[addForm.x || 0, 0.4, addForm.z || 0]}>
+                      <boxGeometry args={[1, 0.8, 1]} />
+                      <meshStandardMaterial color={addForm.color || "#10b981"} transparent opacity={0.6} emissive={addForm.color || "#10b981"} emissiveIntensity={0.5} depthWrite={false} />
+                  </mesh>
+               )}
+            </group>
+        )}
+        
+        {/* ======== PERIMETER COMPRESSED WALLS ======== */}
+        {warehouse?.dimensions && (() => {
+            const wallH = Number(warehouse.dimensions.height) || 8;
+            const wW = Number(warehouse.dimensions.width) || 40;
+            const wD = Number(warehouse.dimensions.depth) || 40;
+            return (
+              <group>
+                  <mesh position={[0, wallH/2, wD / 2]} onClick={() => { setActiveRack(null); setActivePallet(null); }}><boxGeometry args={[wW, wallH, 0.4]} /><meshStandardMaterial color="#d1d5db" transparent opacity={0.3} /></mesh>
+                  <mesh position={[0, wallH/2, -wD / 2]} onClick={() => { setActiveRack(null); setActivePallet(null); }}><boxGeometry args={[wW, wallH, 0.4]} /><meshStandardMaterial color="#d1d5db" transparent opacity={0.3} /></mesh>
+                  <mesh position={[-wW / 2, wallH/2, 0]} rotation={[0, Math.PI/2, 0]} onClick={() => { setActiveRack(null); setActivePallet(null); }}><boxGeometry args={[wD + 0.4, wallH, 0.4]} /><meshStandardMaterial color="#d1d5db" transparent opacity={0.3} /></mesh>
+                  <mesh position={[wW / 2, wallH/2, 0]} rotation={[0, Math.PI/2, 0]} onClick={() => { setActiveRack(null); setActivePallet(null); }}><boxGeometry args={[wD + 0.4, wallH, 0.4]} /><meshStandardMaterial color="#e5e7eb" transparent opacity={0.3} /></mesh>
+              </group>
+            );
+        })()}
+
+        {/* ======== DOCK DOORS ======== */}
+        {warehouse?.doors?.map((door: any, idx: number) => (
+            <group key={`door-${idx}`}>
+                <mesh position={door.position} rotation={door.rotation}><boxGeometry args={[3, 3, 0.5]} /><meshStandardMaterial color="#9ca3af" /></mesh>
+            </group>
+        ))}
+
+        {/* ======== DYNAMIC RACKS ======== */}
+        {warehouse?.racks?.map((rack: any) => (
+            <Rack key={rack.id} position={rack.position} rotation={rack.rotation || [0,0,0]} bays={rack.bays} levels={rack.levels} slots={rack.slots || 3} label={rack.label} inventory={getRackInventory(rack.label)} isActive={isRackHighlighted(rack.label)} {...rackProps} />
+        ))}
+
+        {/* ======== LOOSE FLOOR PALLETS ======== */}
+        {floorInventory.map((p: any) => (
+            <FloorPallet key={p.id} pallet={p} activePallet={activePallet} onPalletClick={setActivePallet} onClick={setActiveRack} />
+        ))}
+      </Canvas>
+    </div>
+  );
+}
+
+export const defaultWarehouseBlueprint = {
+    id: "wh_default_01",
+    name: "Main HQ Warehouse",
+    dimensions: { width: 25, depth: 28 },
+    doors: [
+        { label: "SOUTH DOCK", position: [0, 1.5, 13.6], rotation: [0, 0, 0] },
+        { label: "NORTH DOOR", position: [0, 1.5, -13.6], rotation: [0, Math.PI, 0] }
+    ],
+    racks: [
+        { id: "rack_01", label: 'Aisle S-Left', position: [-6.5, 0, 12.5], rotation: [0,0,0], bays: 2, levels: 2 },
+        { id: "rack_02", label: 'Aisle S-Right', position: [6.5, 0, 12.5], rotation: [0,0,0], bays: 2, levels: 2 },
+        { id: "rack_03", label: 'Aisle West-Main', position: [-11.5, 0, -4.5], rotation: [0, Math.PI/2, 0], bays: 5, levels: 2 },
+        { id: "rack_04", label: 'Aisle East-Wall', position: [11.5, 0, -8.5], rotation: [0, -Math.PI/2, 0], bays: 4, levels: 2 },
+        { id: "rack_05", label: 'Aisle East-Inner', position: [7.5, 0, -8.5], rotation: [0, -Math.PI/2, 0], bays: 4, levels: 2 },
+        { id: "rack_06", label: 'Aisle East-Lower', position: [11.5, 0, 6], rotation: [0, -Math.PI/2, 0], bays: 2, levels: 2 }
+    ]
+};
+
+
+export function Inventory() {
+  const [mainTab, setMainTab] = useState<'Warehouse' | 'Pallets' | 'Events' | 'CheckInOut'>('Warehouse');
+  const [activeTab, setActiveTab] = useState('Map');
+  const [activeRack, setActiveRack] = useState<string | null>(null);
+  const [activePallet, setActivePallet] = useState<any>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
+  const [inventoryDB, setInventoryDB] = useState<any[]>([]);
+  const [currentWarehouse, setCurrentWarehouse] = useState<any>(null);
+  
+  const [inspectPalletId, setInspectPalletId] = useState<string | null>(null);
+  const [printRackLabelRack, setPrintRackLabelRack] = useState<string | null>(null);
+
+  const [allWarehouses, setAllWarehouses] = useState<any[]>([]);
+
+  const [mobilePlacementData, setMobilePlacementData] = useState<any>(null);
+  const [mobileSelectedPalletId, setMobileSelectedPalletId] = useState<string>("");
+  const [mobilePlacementSuccess, setMobilePlacementSuccess] = useState(false);
+
+  useEffect(() => {
+     const params = new URLSearchParams(window.location.search);
+     if (params.get('action') === 'place_pallet') {
+         setMobilePlacementData({
+             warehouseId: params.get('wh') || null,
+             rackLabel: params.get('rack') || '',
+             bay: parseInt(params.get('bay') || '0'),
+             level: parseInt(params.get('level') || '0'),
+             slot: parseInt(params.get('slot') || '-1')
+         });
+     }
+  }, []);
+
+  useEffect(() => {
+     // Fetch schemas
+     const qSchemas = query(collection(db, 'warehouses'));
+     const unsubSchemas = onSnapshot(qSchemas, (snapshot) => {
+         if (snapshot.empty) {
+             setDoc(doc(db, 'warehouses', defaultWarehouseBlueprint.id), defaultWarehouseBlueprint);
+             setCurrentWarehouse(defaultWarehouseBlueprint);
+             setAllWarehouses([defaultWarehouseBlueprint]);
+         } else {
+             const data = snapshot.docs.map(d => d.data());
+             setAllWarehouses(data);
+             setCurrentWarehouse((prev: any) => {
+                 if (prev) {
+                     const updated = data.find((w: any) => w.id === prev.id);
+                     if (updated) return updated;
+                 }
+                 return data.find((w: any) => w.id === "wh_default_01") || data[0];
+             });
+         }
+     });
+
+     return () => unsubSchemas();
+  }, []);
+
+  const [allPallets, setAllPallets] = useState<any[]>([]);
+  const [palletStats, setPalletStats] = useState({ pallets: 0, boxes: 0, items: 0, skus: [] as string[], names: [] as string[], sizes: [] as string[] });
+
+  useEffect(() => {
+     if (!currentWarehouse) return;
+     
+     let palletsData: any[] = [];
+     let eventsData: any[] = [];
+
+     const processAndSet = () => {
+         const rawData = [...palletsData, ...eventsData];
+         setAllPallets(rawData);
+         
+         const mappedInventory = rawData.filter((d: any) => d.warehouseId === currentWarehouse.id);
+         setInventoryDB(mappedInventory);
+         
+         let pCount = 0; let bCount = 0; let iCount = 0;
+         const skuSet = new Set<string>();
+         const nameSet = new Set<string>();
+         const sizeSet = new Set<string>();
+         
+         rawData.forEach(p => {
+             pCount++;
+             if (p.boxes) {
+                 bCount += p.boxes.length;
+                 p.boxes.forEach((b: any) => {
+                     if (b.items) {
+                         iCount += b.items.reduce((acc: number, item: any) => acc + (item.quantity || 1), 0);
+                         b.items.forEach((item: any) => {
+                             if (item.sku) skuSet.add(item.sku);
+                             if (item.name) nameSet.add(item.name);
+                             if (item.size) sizeSet.add(item.size);
+                         });
+                     }
+                 });
+             }
+         });
+         setPalletStats({ 
+             pallets: pCount, 
+             boxes: bCount, 
+             items: iCount,
+             skus: Array.from(skuSet).sort(),
+             names: Array.from(nameSet).sort(),
+             sizes: Array.from(sizeSet).sort()
+         });
+     };
+
+     const unsubPallets = onSnapshot(query(collection(db, 'pallets')), (snapshot) => {
+         palletsData = snapshot.docs.map(d => ({ ...d.data(), _collection: 'pallets' }));
+         processAndSet();
+     });
+     
+     const unsubEvents = onSnapshot(query(collection(db, 'event_items')), (snapshot) => {
+         eventsData = snapshot.docs.map(d => ({ ...d.data(), _collection: 'event_items' }));
+         processAndSet();
+     });
+
+     return () => {
+         unsubPallets();
+         unsubEvents();
+     };
+  }, [currentWarehouse]);
+
+  const [isAddingPallet, setIsAddingPallet] = useState(false);
+  const [isInventoryModalOpen, setIsInventoryModalOpen] = useState(false);
+  
+  const [showFindReplaceModal, setShowFindReplaceModal] = useState(false);
+  const [frTargetField, setFrTargetField] = useState<'name' | 'sku' | 'size'>('name');
+  const [frSearchTerm, setFrSearchTerm] = useState('');
+  const [frReplaceTerm, setFrReplaceTerm] = useState('');
+  const [isFrUpdating, setIsFrUpdating] = useState(false);
+
+  const handleFindReplace = async () => {
+      if (!frSearchTerm.trim() || !frReplaceTerm.trim()) return;
+      setIsFrUpdating(true);
+      
+      try {
+          const snapshot = await getDocs(collection(db, 'pallets'));
+          const batchPromises: any[] = [];
+          
+          snapshot.docs.forEach(d => {
+              const pallet = d.data();
+              let changed = false;
+              
+              if (!pallet.boxes) return;
+              
+              const newBoxes = pallet.boxes.map((box: any) => {
+                  let boxChanged = false;
+                  if (!box.items) return box;
+                  
+                  const newItems = box.items.map((item: any) => {
+                      const currentValue = (item[frTargetField] || '').toLowerCase();
+                      if (currentValue === frSearchTerm.toLowerCase()) {
+                          let finalReplacement = frReplaceTerm;
+                          if (finalReplacement.includes('{size}')) finalReplacement = finalReplacement.replace(/\{size\}/ig, item.size || '');
+                          if (finalReplacement.includes('{sku}')) finalReplacement = finalReplacement.replace(/\{sku\}/ig, item.sku || '');
+                          if (finalReplacement.includes('{name}')) finalReplacement = finalReplacement.replace(/\{name\}/ig, item.name || '');
+
+                          if (item[frTargetField] !== finalReplacement) {
+                              changed = true;
+                              boxChanged = true;
+                              return { ...item, [frTargetField]: finalReplacement };
+                          }
+                      }
+                      return item;
+                  });
+                  
+                  return boxChanged ? { ...box, items: newItems } : box;
+              });
+              
+              if (changed) {
+                  batchPromises.push(setDoc(doc(db, 'pallets', pallet.id), { ...pallet, boxes: newBoxes }));
+              }
+          });
+          
+          if (batchPromises.length > 0) {
+              await Promise.all(batchPromises);
+              alert(`Find & Replace complete! Updated ${batchPromises.length} pallets.`);
+          } else {
+              alert('No items matched the given search term.');
+          }
+          
+          setShowFindReplaceModal(false);
+          setFrSearchTerm('');
+          setFrReplaceTerm('');
+      } catch (err) {
+          console.error(err);
+          alert('Failed to execute find and replace.');
+      }
+      
+      setIsFrUpdating(false);
+  };
+  
+  const [showBatchImageModal, setShowBatchImageModal] = useState(false);
+  const [batchMatchTerm, setBatchMatchTerm] = useState('');
+  const [batchMatchType, setBatchMatchType] = useState<'name' | 'sku'>('name');
+  const [batchImageUrl, setBatchImageUrl] = useState('');
+  const [isBatchUpdating, setIsBatchUpdating] = useState(false);
+  const [isBatchUploadingImage, setIsBatchUploadingImage] = useState(false);
+
+  const handleBatchUpdateImages = async () => {
+      if (!batchMatchTerm.trim() || !batchImageUrl.trim()) return;
+      setIsBatchUpdating(true);
+      
+      try {
+          const snapshot = await getDocs(collection(db, 'pallets'));
+          const batchPromises: any[] = [];
+          
+          snapshot.docs.forEach(d => {
+              const pallet = d.data();
+              let changed = false;
+              
+              if (!pallet.boxes) return;
+              
+              const newBoxes = pallet.boxes.map((box: any) => {
+                  let boxChanged = false;
+                  if (!box.items) return box;
+                  
+                  const newItems = box.items.map((item: any) => {
+                      const matches = batchMatchType === 'sku' 
+                          ? (item.sku || '').toLowerCase() === batchMatchTerm.toLowerCase()
+                          : (item.name || '').toLowerCase() === batchMatchTerm.toLowerCase();
+                          
+                      if (matches && item.photoUrl !== batchImageUrl) {
+                          changed = true;
+                          boxChanged = true;
+                          return { ...item, photoUrl: batchImageUrl };
+                      }
+                      return item;
+                  });
+                  
+                  return boxChanged ? { ...box, items: newItems } : box;
+              });
+              
+              if (changed) {
+                  batchPromises.push(setDoc(doc(db, 'pallets', pallet.id), { ...pallet, boxes: newBoxes }));
+              }
+          });
+          
+          if (batchPromises.length > 0) {
+              await Promise.all(batchPromises);
+              alert(`Batch image update complete! Updated ${batchPromises.length} pallets.`);
+          } else {
+              alert('No items matched the given term, or they already had this image.');
+          }
+          
+          setShowBatchImageModal(false);
+          setBatchMatchTerm('');
+          setBatchImageUrl('');
+      } catch (err) {
+          console.error(err);
+          alert('Failed to batch update images.');
+      }
+      
+      setIsBatchUpdating(false);
+  };
+  
+  const handleDeletePallet = async (id: string, collectionName: string = 'pallets') => {
+    setActivePallet(null);
+    setDeleteConfirmId(null);
+    try {
+        await setDoc(doc(db, collectionName, id), {
+            warehouseId: null,
+            zone: null,
+            position: null,
+            rotation: null,
+            rackSpecs: null,
+            location: null
+        }, { merge: true });
+    } catch (err) {
+        console.error("Failed to unmap from remote DB", err);
+    }
+  };
+
+
+
+  const [addForm, setAddForm] = useState({ palletId: '', color: '#10b981', zoneType: 'Floor', x: 0, z: 0, rackLabel: 'Aisle S-Left', bay: 0, level: 0, slot: -1, type: 'Pallet', width: 1.2, depth: 1.2, height: 1.5 });
+
+  const handleAddPallet = async (e: any) => {
+    e.preventDefault();
+    if (!addForm.palletId) return alert('Please select a pallet to stage.');
+    
+    const isFloor = addForm.zoneType === 'Floor';
+    const activeRackObj = currentWarehouse?.racks?.find((r: any) => r.label === addForm.rackLabel);
+    
+    // Bounds checking for slotting
+    const maxBays = activeRackObj?.bays ?? 1;
+    const maxLevels = activeRackObj?.levels ?? 1;
+    
+    const bayIndex = Math.min(parseInt(addForm.bay as any), maxBays - 1);
+    const levelIndex = Math.min(parseInt(addForm.level as any), maxLevels - 1);
+    
+    const updates = {
+        type: addForm.type,
+        warehouseId: currentWarehouse?.id || "wh_default_01",
+        zone: isFloor ? 'Floor' : addForm.rackLabel,
+        color: addForm.color,
+        height: addForm.height,
+        dimensions: {
+            width: addForm.width,
+            depth: addForm.depth,
+            height: addForm.height
+        },
+        ...(isFloor ? {
+            position: [parseFloat(addForm.x as any) || 0, 0, parseFloat(addForm.z as any) || 0],
+            rotation: [0, 0, 0],
+            location: `Open Floor Zone (${addForm.x}, ${addForm.z})`
+        } : {
+            rackSpecs: { bay: bayIndex, level: levelIndex, slot: parseInt(addForm.slot as any) },
+            location: `${addForm.rackLabel} | Bay ${bayIndex+1} | Level ${levelIndex}`
+        })
+    };
+    
+    try {
+        const targetPayload = allPallets.find(p => p.id === addForm.palletId);
+        const collectionName = targetPayload?._collection || 'pallets';
+        await setDoc(doc(db, collectionName, addForm.palletId), updates, { merge: true });
+    } catch (err) {
+        console.error("Failed to write to remote DB", err);
+    }
+    setIsAddingPallet(false);
+  };
+
+  const updateWarehouse = async (updates: any) => {
+     if (!currentWarehouse) return;
+     const fresh = { ...currentWarehouse, ...updates };
+     setCurrentWarehouse(fresh); // optimistic
+     try {
+         await setDoc(doc(db, 'warehouses', fresh.id), fresh);
+     } catch (err) {
+         console.error("Failed to commit warehouse layout", err);
+     }
+  };
+
+  const handleAddRack = () => {
+      const newRack = {
+          id: `rack_${Math.floor(Math.random() * 10000)}`,
+          label: `New Rack ${currentWarehouse.racks.length + 1}`,
+          position: [0, 0, 0],
+          rotation: [0, 0, 0],
+          bays: 1,
+          levels: 1,
+          slots: 3
+      };
+      updateWarehouse({ racks: [...currentWarehouse.racks, newRack] });
+      setActiveRack(newRack.label);
+  };
+
+  const updateActiveRack = (updates: any) => {
+      if (!currentWarehouse || activeRack === null) return;
+      const newRacks = currentWarehouse.racks.map((r: any) => r.label === activeRack ? { ...r, ...updates } : r);
+      if (updates.label) {
+          setActiveRack(updates.label); // Sync active context if label strictly changes
+      }
+      updateWarehouse({ racks: newRacks });
+  };
+
+  const handleDeleteRack = () => {
+      if (!currentWarehouse || activeRack === null) return;
+      if (window.confirm("Are you sure you want to permanently delete this rack? All inventory staged on it will lose its physical coordinate mapping!")) {
+          updateWarehouse({ racks: currentWarehouse.racks.filter((r: any) => r.label !== activeRack) });
+          setActiveRack(null);
+      }
+  };
+
+  const handlePrintLabel = () => {
+    window.print();
+  };
+
+  if (mobilePlacementData) {
+      const getSlotName = (s: number) => s === -1 ? '1' : s === 0 ? '2' : '3';
+      return (
+          <div className="fixed inset-0 z-[200] bg-brand-bg flex flex-col p-6 overflow-y-auto">
+             <div className="bg-white rounded-2xl shadow-sm border border-brand-border p-6 mb-6">
+                <h1 className="font-serif text-3xl font-black mb-2 uppercase tracking-tight text-center">{mobilePlacementData.rackLabel}</h1>
+                <div className="flex justify-center gap-4 text-brand-primary">
+                   <div className="bg-neutral-100 px-4 py-2 rounded-lg text-center">
+                      <div className="text-[10px] font-bold tracking-widest text-brand-secondary uppercase">Bay</div>
+                      <div className="font-black text-2xl">{mobilePlacementData.bay}</div>
+                   </div>
+                   <div className="bg-neutral-100 px-4 py-2 rounded-lg text-center">
+                      <div className="text-[10px] font-bold tracking-widest text-brand-secondary uppercase">Level</div>
+                      <div className="font-black text-2xl">{mobilePlacementData.level}</div>
+                   </div>
+                   <div className="bg-neutral-100 px-4 py-2 rounded-lg text-center">
+                      <div className="text-[10px] font-bold tracking-widest text-brand-secondary uppercase">Slot</div>
+                      <div className="font-black text-2xl">{getSlotName(mobilePlacementData.slot)}</div>
+                   </div>
+                </div>
+             </div>
+
+             {mobilePlacementSuccess ? (
+                <div className="bg-emerald-50 border-2 border-emerald-500 rounded-2xl p-8 text-center mt-8">
+                   <h2 className="text-2xl font-black text-emerald-700 mb-2">Success!</h2>
+                   <p className="text-emerald-600 font-medium mb-6">Pallet securely docked to location.</p>
+                   <button onClick={() => { setMobilePlacementData(null); window.history.replaceState({}, document.title, window.location.pathname); }} className="w-full bg-emerald-600 text-white font-bold uppercase tracking-widest py-4 rounded-xl shadow-lg">Return to Map</button>
+                </div>
+             ) : (
+                <div className="bg-white rounded-2xl shadow-sm border border-brand-border p-6">
+                   <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary block mb-3">Select Pallet to Dock</label>
+                   <select 
+                      value={mobileSelectedPalletId} 
+                      onChange={e => setMobileSelectedPalletId(e.target.value)} 
+                      className="w-full p-4 rounded-xl border-2 border-brand-border bg-neutral-50 font-bold text-lg focus:outline-none focus:border-brand-primary mb-6"
+                   >
+                      <option value="">-- Choose Pallet --</option>
+                      {allPallets.filter((p: any) => !p.warehouseId).map((p: any) => (
+                          <option key={p.id} value={p.id}>{p.name || p.client || p.id}</option>
+                      ))}
+                   </select>
+
+                   <button 
+                      disabled={!mobileSelectedPalletId}
+                      onClick={async () => {
+                          let targetWarehouseId = mobilePlacementData.warehouseId;
+                          if (!targetWarehouseId && allWarehouses.length > 0) {
+                              const foundWh = allWarehouses.find(wh => 
+                                  wh.racks?.some((r: any) => r.label === mobilePlacementData.rackLabel)
+                              );
+                              if (foundWh) targetWarehouseId = foundWh.id;
+                          }
+                          
+                          const palletRef = doc(db, 'pallets', mobileSelectedPalletId);
+                          await setDoc(palletRef, {
+                             zone: mobilePlacementData.rackLabel,
+                             rackSpecs: {
+                                 bay: mobilePlacementData.bay,
+                                 level: mobilePlacementData.level,
+                                 slot: mobilePlacementData.slot
+                             },
+                             warehouseId: targetWarehouseId || currentWarehouse?.id || defaultWarehouseBlueprint.id
+                          }, { merge: true });
+                          setMobilePlacementSuccess(true);
+                      }} 
+                      className={`w-full py-5 rounded-xl font-black uppercase tracking-widest text-sm shadow-xl transition-all ${mobileSelectedPalletId ? 'bg-brand-primary text-white hover:scale-[1.02]' : 'bg-neutral-200 text-neutral-400 cursor-not-allowed'}`}
+                   >
+                      Dock Pallet Now
+                   </button>
+                </div>
+             )}
+          </div>
+      );
+  }
+
+  return (
+    <div className={`${tokens.layout.container} h-[100dvh] flex flex-col pt-4 md:pt-5`}>
+      <div className="shrink-0 mb-4">
+        <div className="flex justify-between items-center w-full gap-4">
+           <div className="flex items-center gap-4 shrink-0">
+               <h1 className={`${tokens.typography.h1} text-2xl md:text-3xl`}>
+                 {mainTab === 'Warehouse' ? 'Warehouse Inventory' : 'Product Catalog'}
+               </h1>
+               
+               {mainTab === 'Pallets' && (
+                  <div className="hidden md:flex items-center gap-3 ml-2 bg-brand-bg/50 px-3 py-1.5 rounded-lg border border-brand-border/60 shadow-inner">
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary"><b className="text-brand-primary text-[11px]">{palletStats.pallets}</b> Pallets</span>
+                      <span className="text-brand-border">•</span>
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary"><b className="text-brand-primary text-[11px]">{palletStats.boxes}</b> Boxes</span>
+                      <span className="text-brand-border">•</span>
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary"><b className="text-brand-primary text-[11px]">{palletStats.items}</b> Total Items</span>
+                  </div>
+               )}
+           </div>
+
+           {mainTab === 'Pallets' && (
+              <div className="hidden lg:flex flex-1 items-center justify-center gap-3 px-2 min-w-0">
+                  <button 
+                      onClick={() => setShowBatchImageModal(true)}
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-bg border border-brand-border rounded-full text-[9px] font-bold uppercase tracking-widest text-brand-primary hover:bg-black hover:text-white transition-colors shadow-sm whitespace-nowrap"
+                  >
+                      Batch Set Thumbnails
+                  </button>
+                  <button 
+                      onClick={() => setShowFindReplaceModal(true)}
+                      className="flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-bg border border-brand-border rounded-full text-[9px] font-bold uppercase tracking-widest text-brand-primary hover:bg-black hover:text-white transition-colors shadow-sm whitespace-nowrap"
+                  >
+                      <Search size={10} /> Find & Replace
+                  </button>
+              </div>
+           )}
+           
+           <div className="flex bg-brand-bg p-1 rounded-lg border border-brand-border shrink-0 shadow-sm w-auto overflow-x-auto max-w-full">
+             <button 
+                onClick={() => setMainTab('Warehouse')}
+                className={`flex-1 px-3 py-1.5 rounded-md font-bold text-[10px] uppercase tracking-widest transition-all ${mainTab === 'Warehouse' ? 'bg-white shadow-sm text-brand-primary' : 'text-brand-secondary hover:text-brand-primary'}`}
+             >
+                Warehouse
+             </button>
+             <button 
+                onClick={() => setMainTab('Pallets')}
+                className={`flex-1 px-3 py-1.5 rounded-md font-bold text-[10px] uppercase tracking-widest transition-all ${mainTab === 'Pallets' ? 'bg-white shadow-sm text-brand-primary' : 'text-brand-secondary hover:text-brand-primary'}`}
+             >
+                WOVN Pallets
+             </button>
+             <button 
+                onClick={() => setMainTab('Events')}
+                className={`flex-1 px-3 py-1.5 rounded-md font-bold text-[10px] uppercase tracking-widest transition-all ${mainTab === 'Events' ? 'bg-white shadow-sm text-brand-primary' : 'text-brand-secondary hover:text-brand-primary'}`}
+             >
+                Event Items
+             </button>
+             <button 
+                onClick={() => setMainTab('CheckInOut')}
+                className={`flex-1 px-3 py-1.5 rounded-md font-bold text-[10px] uppercase tracking-widest transition-all ${mainTab === 'CheckInOut' ? 'bg-white shadow-sm text-brand-primary' : 'text-brand-secondary hover:text-brand-primary'}`}
+             >
+                Check In / Out
+             </button>
+           </div>
+        </div>
+
+        {mainTab === 'Warehouse' && (
+           <div className="flex justify-between items-center w-full py-4 border-y border-brand-border/50 bg-brand-bg/30 animate-in fade-in mb-2">
+              <div className="flex items-center gap-3">
+                 <span className="text-[10px] uppercase tracking-widest font-bold text-brand-secondary pl-2">Current Room:</span>
+                 <div className="flex items-center bg-white border border-brand-border rounded-lg overflow-hidden h-9 shadow-sm">
+                   <select 
+                     value={currentWarehouse?.id || ''} 
+                     onChange={(e) => {
+                         const wh = allWarehouses.find(w => w.id === e.target.value);
+                         if (wh) {
+                             setCurrentWarehouse(wh);
+                             setActiveRack(null);
+                             setActivePallet(null);
+                             setAddForm(prev => ({ ...prev, rackLabel: wh.racks?.[0]?.label || '' }));
+                         }
+                     }}
+                     className="bg-transparent border-none px-3 py-1 text-sm font-bold text-brand-primary outline-none cursor-pointer pr-8"
+                   >
+                     {allWarehouses.map(w => (
+                        <option key={w.id} value={w.id}>{w.name}</option>
+                     ))}
+                   </select>
+                 </div>
+                 <button 
+                   onClick={() => {
+                       const newWh = {
+                           id: `wh_${Math.floor(Math.random() * 100000)}`,
+                           name: "New Room",
+                           dimensions: { width: 20, depth: 20 },
+                           doors: [],
+                           racks: []
+                       };
+                       setDoc(doc(db, 'warehouses', newWh.id), newWh);
+                       setCurrentWarehouse(newWh);
+                   }}
+                   className="bg-white text-brand-primary border border-brand-border px-3 h-9 rounded-lg text-[10px] font-bold uppercase tracking-widest hover:bg-black hover:text-white transition-colors shadow-sm"
+                 >
+                   + Add Room
+                 </button>
+              </div>
+
+              <div className="flex bg-white p-1 rounded-xl border border-brand-border shrink-0 shadow-sm mr-2">
+                 <button 
+                   onClick={() => setActiveTab('Map')}
+                   className={`flex items-center gap-2 px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${activeTab === 'Map' ? 'bg-brand-bg text-brand-primary' : 'text-brand-secondary hover:text-brand-primary'}`}
+                 >
+                    <Map size={14} /> 3D Map
+                 </button>
+                 <button 
+                   onClick={() => setActiveTab('Labels')}
+                   className={`flex items-center gap-2 px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${activeTab === 'Labels' ? 'bg-brand-bg text-brand-primary' : 'text-brand-secondary hover:text-brand-primary'}`}
+                 >
+                    <QrCode size={14} /> Print Labels
+                 </button>
+                 <button 
+                   onClick={() => setActiveTab('Builder')}
+                   className={`flex items-center gap-2 px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${activeTab === 'Builder' ? 'bg-brand-bg text-brand-primary' : 'text-brand-secondary hover:text-brand-primary'}`}
+                 >
+                    <Settings size={14} /> Admin Builder
+                 </button>
+              </div>
+           </div>
+        )}
+      </div>
+      
+      <div className="mt-8 flex-1 min-h-[600px] relative pb-8">
+        {mainTab === 'Warehouse' && (activeTab === 'Map' || activeTab === 'Builder') && (
+           <div className="w-full h-full flex gap-6">
+              <div className="flex-1 h-full shadow-[0_4px_24px_-8px_rgba(0,0,0,0.1)] rounded-2xl bg-brand-bg relative cursor-move">
+                 <Suspense fallback={<div className="absolute inset-0 flex items-center justify-center font-serif text-brand-secondary text-2xl animate-pulse">Initializing WebGL Engine...</div>}>
+                    {currentWarehouse && (
+                        <WarehouseMap 
+                            activeRack={activeRack} 
+                            setActiveRack={setActiveRack} 
+                            activePallet={activePallet} 
+                            setActivePallet={setActivePallet} 
+                            inventory={inventoryDB} 
+                            warehouse={currentWarehouse}
+                            isAddingPallet={isAddingPallet} 
+                            addForm={addForm} 
+                            setAddForm={setAddForm} 
+                        />
+                    )}
+                 </Suspense>
+              </div>
+              
+              <div className="w-80 h-full bg-white rounded-card border border-brand-border shadow-sm flex flex-col shrink-0 overflow-hidden relative">
+                 {activeTab === 'Builder' ? (
+                     <div className="flex flex-col h-full animate-in fade-in slide-in-from-right-4">
+                         <div className="p-6 pb-4 border-b border-brand-border/50 shrink-0 bg-brand-bg relative">
+                            <h2 className={tokens.typography.h2}>Layout Builder</h2>
+                            <p className="text-[10px] uppercase font-bold text-brand-secondary mt-1 tracking-widest">{currentWarehouse?.name || "Loading..."}</p>
+                         </div>
+                         
+                         <div className="flex-1 overflow-y-auto w-full p-6 custom-scrollbar">
+                             {activeRack !== null && currentWarehouse?.racks?.find((r:any) => r.label === activeRack) ? (() => {
+                                 const r = currentWarehouse.racks.find((r:any) => r.label === activeRack);
+                                 return (
+                                    <div className="space-y-6">
+                                       <div className="flex justify-between items-center mb-2">
+                                          <h3 className="font-serif font-bold text-brand-primary text-xl">Rack Editor</h3>
+                                          <button onClick={() => setActiveRack(null)} className="text-[10px] uppercase font-bold text-brand-secondary hover:text-black">Back to Map</button>
+                                       </div>
+                                       
+                                       <div className="space-y-4 border-l-2 border-brand-primary pl-4">
+                                            <div className="pb-2">
+                                                <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1 block">Rack Variation</label>
+                                                <select value={r.type || 'Pallet'} onChange={(e) => updateActiveRack({ type: e.target.value })} className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-sm font-medium focus:outline-brand-primary">
+                                                   <option value="Pallet">Industrial Pallet Rack</option>
+                                                   <option value="Box">Rolling Box Rack</option>
+                                                </select>
+                                             </div>
+                                             
+                                            <div>
+                                               <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1 block">Aisle / Label</label>
+                                               <input type="text" value={r.label} onChange={(e) => updateActiveRack({ label: e.target.value })} className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-sm font-medium focus:outline-brand-primary" />
+                                            </div>
+                                            
+                                            <div className="grid grid-cols-3 gap-3">
+                                                <div>
+                                                   <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1 block">Num Bays</label>
+                                                   <input type="number" min="1" max="20" value={r.bays} onChange={(e) => updateActiveRack({ bays: parseInt(e.target.value) || 1 })} className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-sm font-medium focus:outline-brand-primary" />
+                                                </div>
+                                                <div>
+                                                   <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1 block">Vertical Levels</label>
+                                                   <input type="number" min="1" max="10" value={r.levels} onChange={(e) => updateActiveRack({ levels: parseInt(e.target.value) || 1 })} className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-sm font-medium focus:outline-brand-primary" />
+                                                </div>
+                                                <div>
+                                                   <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1 block">Slots / Bay</label>
+                                                   <select value={r.slots || 3} onChange={(e) => updateActiveRack({ slots: parseInt(e.target.value) })} className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-sm font-medium focus:outline-brand-primary">
+                                                      <option value={2}>2 Slots</option>
+                                                      <option value={3}>3 Slots</option>
+                                                   </select>
+                                                </div>
+                                            </div>
+                                            
+                                            <div className="grid grid-cols-2 gap-3 pt-2">
+                                                <div>
+                                                   <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1 block">Pos X (Lateral)</label>
+                                                   <input type="number" step="0.5" value={r.position[0]} onChange={(e) => updateActiveRack({ position: [parseFloat(e.target.value)||0, r.position[1], r.position[2]] })} className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-sm font-medium focus:outline-brand-primary" />
+                                                </div>
+                                                <div>
+                                                   <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1 block">Pos Z (Depth)</label>
+                                                   <input type="number" step="0.5" value={r.position[2]} onChange={(e) => updateActiveRack({ position: [r.position[0], r.position[1], parseFloat(e.target.value)||0] })} className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-sm font-medium focus:outline-brand-primary" />
+                                                </div>
+                                            </div>
+                                            
+                                            <div>
+                                               <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1 block">Rotation Y (Degrees)</label>
+                                               <input type="number" step="15" value={Math.round(r.rotation[1] * (180/Math.PI))} onChange={(e) => updateActiveRack({ rotation: [0, (parseFloat(e.target.value)||0) * (Math.PI/180), 0] })} className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-sm font-medium focus:outline-brand-primary" />
+                                            </div>
+                                            
+                                            <button onClick={handleDeleteRack} className="w-full mt-4 bg-red-50 text-red-600 py-3 rounded-lg border border-red-200 font-bold uppercase tracking-widest text-[10px] shadow-sm hover:bg-red-600 hover:text-white transition-colors">
+                                                Delete Rack Forever
+                                            </button>
+                                       </div>
+                                    </div>
+                                 );
+                             })() : (
+                             <div className="space-y-6">
+                                <div>
+                                    <h3 className="font-serif font-bold text-brand-primary text-xl mb-4">Floor Plan</h3>
+                                    
+                                    <div className="space-y-4">
+                                        <div>
+                                           <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1 block">Warehouse Name</label>
+                                           <input type="text" value={currentWarehouse?.name || ''} onChange={(e) => updateWarehouse({ name: e.target.value })} className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-sm font-medium focus:outline-brand-primary" />
+                                        </div>
+                                        <div className="grid grid-cols-3 gap-2">
+                                            <div>
+                                               <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1 block">Width (X)</label>
+                                               <input type="number" value={currentWarehouse?.dimensions?.width || 0} onChange={(e) => updateWarehouse({ dimensions: { ...currentWarehouse.dimensions, width: parseInt(e.target.value) || 1 } })} className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-sm font-medium focus:outline-brand-primary" />
+                                            </div>
+                                            <div>
+                                               <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1 block">Height (Y)</label>
+                                               <input type="number" value={currentWarehouse?.dimensions?.height || 8} onChange={(e) => updateWarehouse({ dimensions: { ...currentWarehouse.dimensions, height: parseInt(e.target.value) || 1 } })} className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-sm font-medium focus:outline-brand-primary" />
+                                            </div>
+                                            <div>
+                                               <label className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1 block">Depth (Z)</label>
+                                               <input type="number" value={currentWarehouse?.dimensions?.depth || 0} onChange={(e) => updateWarehouse({ dimensions: { ...currentWarehouse.dimensions, depth: parseInt(e.target.value) || 1 } })} className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2 text-sm font-medium focus:outline-brand-primary" />
+                                            </div>
+                                        </div>
+                                        
+                                        {allWarehouses.length > 1 && (
+                                           <button 
+                                              onClick={async () => {
+                                                  if (window.confirm(`Are you sure you want to permanently delete the room "${currentWarehouse.name}"?`)) {
+                                                      const toDeleteId = currentWarehouse.id;
+                                                      const nextWh = allWarehouses.find(w => w.id !== toDeleteId);
+                                                      setCurrentWarehouse(nextWh);
+                                                      await deleteDoc(doc(db, 'warehouses', toDeleteId));
+                                                  }
+                                              }}
+                                              className="w-full mt-4 bg-red-50 text-red-600 py-2.5 rounded-lg border border-red-200 font-bold uppercase tracking-widest text-[10px] shadow-sm hover:bg-red-600 hover:text-white transition-colors"
+                                           >
+                                               Delete Room Entirely
+                                           </button>
+                                        )}
+
+                                        <button 
+                                            onClick={() => {
+                                                const newWh = {
+                                                    id: `wh_${Math.floor(Math.random() * 100000)}`,
+                                                    name: "New Warehouse",
+                                                    dimensions: { width: 20, depth: 20, height: 8 },
+                                                    doors: [],
+                                                    racks: []
+                                                };
+                                                setDoc(doc(db, 'warehouses', newWh.id), newWh);
+                                                setCurrentWarehouse(newWh);
+                                            }}
+                                            className="w-full mt-3 bg-white text-brand-primary py-2.5 rounded-lg border border-brand-border font-bold uppercase tracking-widest text-[10px] shadow-sm hover:bg-brand-primary hover:text-white transition-colors"
+                                        >
+                                            + Create New Warehouse
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                                <hr className="border-brand-border" />
+                                
+                                <button onClick={handleAddRack} className="w-full bg-brand-primary text-white py-3 rounded-lg font-bold uppercase tracking-widest text-xs shadow hover:bg-brand-primary/90 transition-colors">
+                                    + Add Storage Rack
+                                </button>
+                                
+                                <p className="text-xs text-brand-secondary italic text-center">Select a physical rack on the map to modify its properties.</p>
+                             </div>
+                             )}
+                         </div>
+                     </div>
+                 ) : (
+                     <>
+                         <div className="p-6 pb-4 border-b border-brand-border/50 shrink-0">
+                            <h2 className={tokens.typography.h2}>Zone Inspector</h2>
+                            <p className="text-[10px] uppercase font-bold text-brand-secondary mt-1 tracking-widest">Select a rack payload</p>
+                         </div>
+                         
+                         <div className="flex-1 overflow-y-auto w-full p-6 custom-scrollbar">
+                    {activePallet ? (
+                      <div className="animate-in fade-in slide-in-from-right-4">
+                         <div className="bg-brand-primary text-white p-5 rounded-2xl mb-6 shadow-lg">
+                            <div className="flex justify-between items-start mb-2">
+                               <span className="text-[10px] font-bold uppercase tracking-widest border border-white/30 px-2 py-0.5 rounded text-white/90">
+                                  {activePallet.type}
+                               </span>
+                            </div>
+                            <h3 className="font-serif text-3xl font-bold tracking-tight mb-1 truncate">{activePallet.name || activePallet.client || 'Unnamed Pallet'}</h3>
+                            <p className="text-white/80 text-xs font-medium uppercase tracking-widest mb-1">{activePallet.id}</p>
+                         </div>
+                         
+                         <div className="space-y-4">
+                            <div>
+                              <p className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1">Exact Location</p>
+                              <div className="bg-brand-bg p-3 flex flex-col rounded-lg border border-brand-border/50 text-xs font-semibold text-brand-primary break-words">
+                                 {activePallet.zone === 'Floor' 
+                                    ? `Floor Zone (X: ${activePallet.position?.[0] ?? 0}, Z: ${activePallet.position?.[2] ?? 0})`
+                                    : `${activePallet.zone} | Bay ${activePallet.rackSpecs?.bay ?? 0} | Level ${activePallet.rackSpecs?.level ?? 0}${activePallet.rackSpecs?.slot !== undefined ? ` | Slot ${activePallet.rackSpecs.slot === -1 ? '1' : activePallet.rackSpecs.slot === 0 ? '2' : '3'}` : ''}`
+                                 }
+                              </div>
+                            </div>
+                             <div>
+                              <p className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1">Status</p>
+                              {activePallet.status === 'Checked Out' ? (
+                                  <div className="bg-amber-50 text-amber-700 p-3 rounded-lg border border-amber-200 text-sm font-bold flex flex-col gap-1">
+                                     <div className="flex gap-2 items-center"><div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></div> Checked Out</div>
+                                     <div className="text-[10px] uppercase font-bold tracking-widest text-amber-600/80 mt-1">To: {activePallet.checkedOutTo || 'External Event'}</div>
+                                     <button onClick={async () => {
+                                         const palletRef = doc(db, activePallet._collection || 'pallets', activePallet.id);
+                                         await setDoc(palletRef, { status: 'In Warehouse', checkedOutTo: null, checkoutDate: null }, { merge: true });
+                                         setActivePallet({...activePallet, status: 'In Warehouse'});
+                                     }} className="mt-2 w-full bg-amber-600 text-white py-2 rounded-md uppercase tracking-widest text-[9px] hover:bg-amber-700 transition-colors">
+                                         Check Back In
+                                     </button>
+                                  </div>
+                              ) : (
+                                  <div className="bg-emerald-50 text-emerald-700 p-3 rounded-lg border border-emerald-200 text-sm font-bold flex flex-col gap-1">
+                                     <div className="flex gap-2 items-center"><div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div> Secure In Warehouse</div>
+                                     <button onClick={() => {
+                                         const who = window.prompt("Who or what event is this being checked out to?");
+                                         if (who) {
+                                             const palletRef = doc(db, activePallet._collection || 'pallets', activePallet.id);
+                                             setDoc(palletRef, { 
+                                                 status: 'Checked Out', 
+                                                 checkedOutTo: who, 
+                                                 checkoutDate: new Date().toISOString(),
+                                                 zone: 'Checked Out',
+                                                 location: 'Off-site / Checked Out'
+                                             }, { merge: true });
+                                             setActivePallet(null);
+                                         }
+                                     }} className="mt-2 w-full bg-emerald-600 text-white py-2 rounded-md uppercase tracking-widest text-[9px] hover:bg-emerald-700 transition-colors">
+                                         Check Out Payload
+                                     </button>
+                                  </div>
+                              )}
+                             </div>
+                            
+                            <div>
+                               <p className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1">Color Tag</p>
+                               <div className="flex flex-wrap gap-2">
+                                  {PALLET_SWATCHES.map(color => (
+                                     <button 
+                                        key={color} 
+                                        onClick={async () => {
+                                            const palletRef = doc(db, activePallet._collection || 'pallets', activePallet.id);
+                                            await setDoc(palletRef, { color }, { merge: true });
+                                            setActivePallet({...activePallet, color});
+                                        }}
+                                        className={`w-6 h-6 rounded-full cursor-pointer transition-transform hover:scale-110 shadow-sm ${activePallet.color === color || (!activePallet.color && color === '#10b981') ? 'ring-2 ring-offset-2 ring-brand-primary scale-110' : ''}`}
+                                        style={{ backgroundColor: color }}
+                                     />
+                                  ))}
+                               </div>
+                            </div>
+                            
+                            <button onClick={() => setActiveTab('Labels')} className="w-full mt-4 bg-black text-white px-4 py-3 rounded-lg font-bold uppercase tracking-widest text-xs flex justify-center items-center gap-2 shadow-sm hover:scale-[1.02] transition-transform">
+                               <QrCode size={16} /> Print Route Info
+                            </button>
+                            <button onClick={() => { setInspectPalletId(activePallet.id); setMainTab('Pallets'); }} className="w-full bg-white text-black border border-brand-border px-4 py-3 rounded-lg font-bold uppercase tracking-widest text-xs flex justify-center items-center gap-2 hover:bg-neutral-50 shadow-sm transition-colors mt-2">
+                               <PackageOpen size={16} /> Open Inventory View
+                            </button>
+
+                            {deleteConfirmId === activePallet.id ? (
+                               <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDeletePallet(activePallet.id, activePallet._collection); }} className="w-full mt-2 bg-red-600 text-white px-4 py-3 rounded-lg font-bold uppercase tracking-widest text-xs flex justify-center items-center gap-2 shadow-sm hover:bg-red-700 transition-colors">
+                                   Confirm Deletion
+                               </button>
+                            ) : (
+                               <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDeleteConfirmId(activePallet.id); }} className="w-full mt-2 border border-red-200 text-red-600 px-4 py-3 rounded-lg font-bold uppercase tracking-widest text-xs flex justify-center items-center gap-2 shadow-sm hover:bg-red-50 transition-colors">
+                                   Delete Payload
+                               </button>
+                            )}
+                         </div>
+                      </div>
+                    ) : activeRack ? (
+                      <div className="animate-in fade-in slide-in-from-right-4">
+                         <div className="bg-brand-primary text-white p-5 rounded-2xl mb-6 shadow-lg">
+                            <span className="text-[10px] font-bold uppercase tracking-widest opacity-70">Current Location</span>
+                            <h3 className="font-serif text-2xl border-b border-white/20 pb-3 mb-3 mt-1 tracking-tight">{activeRack}</h3>
+                            <div className="flex items-center gap-2 text-sm font-medium"><Boxes size={16} className="opacity-80"/> {inventoryDB.filter((p: any) => p.zone === activeRack).length} Active Pallets</div>
+                         </div>
+                         
+                         <button onClick={() => setPrintRackLabelRack(activeRack)} className="w-full mb-6 bg-black text-white px-4 py-3 rounded-lg font-bold uppercase tracking-widest text-xs flex justify-center items-center gap-2 shadow-sm hover:scale-[1.02] transition-transform">
+                             <QrCode size={16} /> Print Rack Barcodes
+                         </button>
+
+                         <h4 className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-3">Manifest Log</h4>
+                         <div className="space-y-3 pb-8">
+                            {inventoryDB.filter((p: any) => p.zone === activeRack).map((p: any) => (
+                               <div key={p.id} onClick={() => setActivePallet(p)} className="border border-brand-border rounded-xl p-4 hover:bg-brand-bg/50 transition-all cursor-pointer group">
+                                  <div className="flex justify-between items-center mb-2">
+                                     <span className="text-xs font-bold text-brand-primary group-hover:underline uppercase tracking-wider">{p.id}</span>
+                                     <span className="text-[9px] font-bold uppercase tracking-widest bg-brand-bg border border-brand-border px-2 py-0.5 rounded text-brand-secondary">{p.type}</span>
+                                  </div>
+                                  <p className="font-serif text-[15px] leading-tight text-brand-primary">{p.name || p.client}</p>
+                               </div>
+                            ))}
+                         </div>
+                      </div>
+                    ) : isAddingPallet ? (
+                      <div className="animate-in fade-in slide-in-from-right-4">
+                         <h3 className="font-serif text-xl border-b border-brand-border/50 pb-3 mb-4 tracking-tight flex justify-between items-center">
+                            <span>Drop New Payload</span>
+                            <div className="flex bg-brand-bg rounded-lg border border-brand-border p-1">
+                               <button onClick={(e) => { e.preventDefault(); setAddForm({...addForm, zoneType: 'Floor'}) }} className={`px-2 py-1 text-[9px] uppercase tracking-widest font-bold rounded ${addForm.zoneType === 'Floor' ? 'bg-white shadow-sm' : 'text-brand-secondary'}`}>Floor</button>
+                               <button onClick={(e) => { e.preventDefault(); setAddForm({...addForm, zoneType: 'Rack'}) }} className={`px-2 py-1 text-[9px] uppercase tracking-widest font-bold rounded ${addForm.zoneType === 'Rack' ? 'bg-white shadow-sm' : 'text-brand-secondary'}`}>Rack</button>
+                            </div>
+                         </h3>
+                         <form onSubmit={handleAddPallet} className="space-y-4">
+                            <div>
+                               <label className="text-[10px] uppercase font-bold text-brand-secondary tracking-widest">Select Payload Entity</label>
+                               <select value={addForm.palletId} onChange={e => {
+                                   const selectedId = e.target.value;
+                                   const selectedPallet = allPallets.find(p => p.id === selectedId);
+                                   setAddForm({
+                                       ...addForm, 
+                                       palletId: selectedId,
+                                       ...(selectedPallet ? {
+                                           type: selectedPallet.type || 'Pallet',
+                                           width: selectedPallet.dimensions?.width || 1.2,
+                                           depth: selectedPallet.dimensions?.depth || 1.0,
+                                           height: selectedPallet.dimensions?.height || 1.2
+                                       } : {})
+                                   });
+                               }} className="w-full mt-1 p-3 rounded-lg border border-brand-border bg-brand-bg text-sm font-semibold focus:outline-brand-primary cursor-pointer">
+                                  <option value="">-- Choose Unmapped Payload --</option>
+                                  {allPallets.filter((p: any) => !p.warehouseId).map((p: any) => (
+                                     <option key={p.id} value={p.id}>{p.name || p.client || p.id}</option>
+                                  ))}
+                               </select>
+                            </div>
+                            
+                            <div className="grid grid-cols-2 gap-4">
+                               <div>
+                                  <label className="text-[10px] uppercase font-bold text-brand-secondary tracking-widest">Type</label>
+                                  <select value={addForm.type} onChange={e => setAddForm({...addForm, type: e.target.value})} className="w-full mt-1 p-3 rounded-lg border border-brand-border bg-brand-bg text-sm font-semibold focus:outline-brand-primary">
+                                     <option value="Pallet">Pallet</option>
+                                     <option value="Road Case">Road Case</option>
+                                     <option value="Box">Loose Box</option>
+                                  </select>
+                               </div>
+                               <div>
+                                  <label className="text-[10px] uppercase font-bold text-brand-secondary tracking-widest">Dimensions (WxDxH)</label>
+                                  <div className="flex mt-1">
+                                      <input type="number" step="0.1" value={addForm.width} onChange={e => setAddForm({...addForm, width: parseFloat(e.target.value)})} className="flex-1 min-w-0 px-2 py-3 rounded-l-lg border border-brand-border bg-brand-bg text-sm font-semibold focus:outline-brand-primary text-center" placeholder="W" />
+                                      <input type="number" step="0.1" value={addForm.depth} onChange={e => setAddForm({...addForm, depth: parseFloat(e.target.value)})} className="flex-1 min-w-0 px-2 py-3 border-y border-brand-border bg-brand-bg text-sm font-semibold focus:outline-brand-primary text-center" placeholder="D" />
+                                      <input type="number" step="0.1" value={addForm.height} onChange={e => setAddForm({...addForm, height: parseFloat(e.target.value)})} className="flex-1 min-w-0 px-2 py-3 rounded-r-lg border border-r border-brand-border bg-brand-bg text-sm font-semibold focus:outline-brand-primary text-center" placeholder="H" />
+                                  </div>
+                               </div>
+                            </div>
+                            
+                            {addForm.zoneType === 'Floor' ? (
+                                <div className="grid grid-cols-2 gap-4">
+                                   <div>
+                                      <label className="text-[10px] uppercase font-bold text-brand-secondary tracking-widest">X Coordinate</label>
+                                      <input type="number" step="0.5" value={addForm.x} onChange={e => setAddForm({...addForm, x: parseFloat(e.target.value)})} className="w-full mt-1 p-3 rounded-lg border border-brand-border bg-brand-bg text-sm font-semibold focus:outline-brand-primary" />
+                                   </div>
+                                   <div>
+                                      <label className="text-[10px] uppercase font-bold text-brand-secondary tracking-widest">Z Coordinate</label>
+                                      <input type="number" step="0.5" value={addForm.z} onChange={e => setAddForm({...addForm, z: parseFloat(e.target.value)})} className="w-full mt-1 p-3 rounded-lg border border-brand-border bg-brand-bg text-sm font-semibold focus:outline-brand-primary" />
+                                   </div>
+                                </div>
+                            ) : (
+                                <div className="space-y-4">
+                                   <div>
+                                      <label className="text-[10px] uppercase font-bold text-brand-secondary tracking-widest">Target Rack</label>
+                                      <select value={addForm.rackLabel} onChange={e => setAddForm({...addForm, rackLabel: e.target.value})} className="w-full mt-1 p-3 rounded-lg border border-brand-border bg-brand-bg text-sm font-semibold focus:outline-brand-primary">
+                                         {currentWarehouse?.racks?.length ? currentWarehouse.racks.map((r: any) => <option key={r.label} value={r.label}>{r.label}</option>) : <option value="">No Racks</option>}
+                                      </select>
+                                   </div>
+                                   <div className="grid grid-cols-3 gap-2">
+                                      <div>
+                                         <label className="text-[10px] uppercase font-bold text-brand-secondary tracking-widest">Bay</label>
+                                         <select value={addForm.bay} onChange={e => setAddForm({...addForm, bay: parseInt(e.target.value)})} className="w-full mt-1 p-3 flex-1 rounded-lg border border-brand-border bg-brand-bg text-sm font-semibold focus:outline-brand-primary">
+                                             {Array.from({ length: currentWarehouse?.racks?.find((r: any) => r.label === addForm.rackLabel)?.bays || 2 }).map((_, idx) => (
+                                                <option key={idx} value={idx}>Bay {idx}</option>
+                                             ))}
+                                         </select>
+                                      </div>
+                                      <div>
+                                         <label className="text-[10px] uppercase font-bold text-brand-secondary tracking-widest">Level</label>
+                                         <select value={addForm.level} onChange={e => setAddForm({...addForm, level: parseInt(e.target.value)})} className="w-full mt-1 p-3 flex-1 rounded-lg border border-brand-border bg-brand-bg text-sm font-semibold focus:outline-brand-primary">
+                                            {Array.from({ length: currentWarehouse?.racks?.find((r: any) => r.label === addForm.rackLabel)?.levels || 2 }).map((_, idx) => (
+                                                <option key={idx} value={idx}>{idx} {idx === 0 ? '(Ground)' : '(Beam)'}</option>
+                                             ))}
+                                         </select>
+                                      </div>
+                                      <div>
+                                         <label className="text-[10px] uppercase font-bold text-brand-secondary tracking-widest">Slot</label>
+                                         <select value={addForm.slot} onChange={e => setAddForm({...addForm, slot: parseInt(e.target.value)})} className="w-full mt-1 p-3 flex-1 rounded-lg border border-brand-border bg-brand-bg text-sm font-semibold focus:outline-brand-primary">
+                                          {(currentWarehouse?.racks?.find((r: any) => r.label === addForm.rackLabel)?.slots || 3) === 2 ? (
+                                              <>
+                                                  <option value={-1}>Slot 1</option>
+                                                  <option value={1}>Slot 2</option>
+                                              </>
+                                          ) : (
+                                              <>
+                                                  <option value={-1}>Slot 1</option>
+                                                  <option value={0}>Slot 2</option>
+                                                  <option value={1}>Slot 3</option>
+                                              </>
+                                          )}
+                                       </select>
+                                      </div>
+                                   </div>
+                                </div>
+                            )}
+
+                            <div>
+                               <label className="text-[10px] uppercase font-bold text-brand-secondary tracking-widest block mb-2">Color Tag</label>
+                               <div className="flex flex-wrap gap-2">
+                                  {PALLET_SWATCHES.map(color => (
+                                     <button 
+                                        key={color} 
+                                        type="button"
+                                        onClick={() => setAddForm({...addForm, color})}
+                                        className={`w-8 h-8 rounded-full cursor-pointer transition-transform hover:scale-110 shadow-sm ${addForm.color === color || (!addForm.color && color === '#10b981') ? 'ring-2 ring-offset-2 ring-brand-primary scale-110' : ''}`}
+                                        style={{ backgroundColor: color }}
+                                     />
+                                  ))}
+                               </div>
+                            </div>
+                            <div className="pt-4 flex gap-2">
+                               <button type="button" onClick={() => setIsAddingPallet(false)} className="flex-1 bg-brand-bg border border-brand-border text-brand-secondary py-3 rounded-lg font-bold uppercase tracking-widest text-xs hover:bg-white transition-colors">Cancel</button>
+                               <button type="submit" className="flex-1 bg-brand-primary text-white py-3 rounded-lg font-bold uppercase tracking-widest text-xs hover:bg-brand-primary/90 transition-colors shadow-sm">Drop in 3D</button>
+                            </div>
+                         </form>
+                      </div>
+                    ) : (
+                      <div className="h-full flex flex-col items-center justify-center text-center opacity-80 px-4 pt-12">
+                         <Map size={48} className="mb-4 text-brand-secondary stroke-1 opacity-50" />
+                         <p className="font-serif text-xl tracking-tight text-brand-primary">No Zone Selected</p>
+                         <p className="text-sm text-brand-secondary mt-2 opacity-80">Click an aisle rack or a block to inspect real-time payload contents.</p>
+                         
+                         <button onClick={() => setIsAddingPallet(true)} className="mt-8 bg-brand-primary text-white px-6 py-2.5 rounded-pill font-bold uppercase tracking-widest text-[10px] shadow-sm mx-auto block hover:bg-black transition-all">
+                            + Stage Payload to Floor
+                         </button>
+                      </div>
+                     )}
+                 </div>
+                 </>)}
+              </div>
+           </div>
+        )}
+        
+        {mainTab === 'Warehouse' && activeTab === 'Labels' && (
+           <div className="w-full h-full bg-white rounded-card border border-brand-border p-8 shadow-sm overflow-y-auto">
+              <div className="max-w-4xl mx-auto">
+                 <div className="flex justify-between items-center mb-8">
+                    <h2 className={tokens.typography.h2}>QR Label Output Engine</h2>
+                    <button onClick={handlePrintLabel} className="bg-brand-primary text-white px-6 py-3 rounded-pill font-bold uppercase tracking-widest text-xs flex items-center gap-2 shadow-md hover:bg-black transition-all hover:scale-[1.02]">
+                       <Printer size={16} /> Print Thermal Sheet
+                    </button>
+                 </div>
+                 
+                 <div className="grid grid-cols-2 gap-8 print-grid">
+                    {(activePallet ? [activePallet] : inventoryDB.slice(0, 8)).map((p: any) => (
+                       <div key={p.id} className="border-[3px] border-black rounded-2xl p-6 bg-white flex print-label shadow-sm transition-shadow h-56">
+                          <div className="flex-1 pr-6 flex flex-col justify-between">
+                            <div>
+                               <img src="/logo.png" alt="Catalyst" className="h-6 w-auto mb-5" />
+                               <h3 className="font-serif text-[32px] font-bold tracking-tight leading-none mb-2">{p.client}</h3>
+                               <p className="text-[10px] uppercase tracking-widest font-bold text-brand-secondary">3PL Kitting Cargo</p>
+                            </div>
+                            <div>
+                               <div className="text-4xl font-black font-sans tracking-tighter mt-4 inline-block border-b-4 border-black pb-1 mb-2">{p.id}</div>
+                               <p className="text-sm font-bold uppercase tracking-widest mt-1">LOC: {p.location}</p>
+                            </div>
+                          </div>
+                          <div className="shrink-0 flex items-center justify-center border-l-4 border-dotted border-brand-border/60 pl-8">
+                            <div className="bg-white p-2 border-4 border-black inline-block rounded-xl">
+                               <QRCode value={`${window.location.hostname === 'localhost' ? 'https://print-shop-os.vercel.app' : window.location.origin}/inventory/scan?id=${p.id}&loc=${encodeURIComponent(p.location)}`} size={140} />
+                            </div>
+                          </div>
+                       </div>
+                    ))}
+                 </div>
+              </div>
+           </div>
+        )}
+        
+        {mainTab === 'Pallets' && (
+           <div className="w-full h-full pb-8 animate-in fade-in">
+              <PalletsTab 
+                 initialActivePalletId={inspectPalletId}
+                 onJumpToWarehouse={(palletId: string, zone: string, warehouseId?: string) => { 
+                     if (warehouseId) {
+                         const targetWarehouse = allWarehouses.find(w => w.id === warehouseId);
+                         if (targetWarehouse) setCurrentWarehouse(targetWarehouse);
+                     }
+                     setMainTab('Warehouse'); 
+                     setActiveTab('Map'); 
+                     setActiveRack(zone || 'Floor'); 
+                     setTimeout(() => setActivePallet(allPallets.find((p: any) => p.id === palletId)), 100); 
+                 }} 
+              />
+           </div>
+        )}
+
+        {mainTab === 'Events' && (
+           <div className="w-full h-full pb-8 animate-in fade-in">
+              <EventsTab 
+                 initialActivePalletId={inspectPalletId}
+                 onJumpToWarehouse={(palletId: string, zone: string, warehouseId?: string) => { 
+                     if (warehouseId) {
+                         const targetWarehouse = allWarehouses.find(w => w.id === warehouseId);
+                         if (targetWarehouse) setCurrentWarehouse(targetWarehouse);
+                     }
+                     setMainTab('Warehouse'); 
+                     setActiveTab('Map'); 
+                     setActiveRack(zone || 'Floor'); 
+                     setTimeout(() => setActivePallet(allPallets.find((p: any) => p.id === palletId)), 100); 
+                 }} 
+              />
+           </div>
+        )}
+
+        {mainTab === 'CheckInOut' && (
+           <div className="w-full h-full pb-8 animate-in fade-in">
+              <CheckInOutTab pallets={allPallets.filter((p: any) => p._collection === 'event_items')} onNavigate={setMainTab} />
+           </div>
+        )}
+
+        {/* Rack Label Print Modal */}
+        {printRackLabelRack && createPortal(
+           <div className="fixed inset-0 bg-white z-[100] flex flex-col animate-in fade-in print:static print:h-auto print:overflow-visible print:block">
+              <div className="p-4 border-b border-brand-border flex justify-between items-center print:hidden bg-brand-bg">
+                 <div>
+                    <h2 className="font-serif text-2xl text-brand-primary font-bold">Rack Labels: {printRackLabelRack}</h2>
+                    <p className="text-sm text-brand-secondary">Print this sheet and affix the barcodes to the corresponding rack bays.</p>
+                 </div>
+                 <div className="flex gap-4">
+                    <button onClick={() => setPrintRackLabelRack(null)} className="px-6 py-3 border border-brand-border bg-white text-brand-primary font-bold tracking-widest uppercase text-xs rounded-lg hover:bg-brand-bg transition-colors">Close</button>
+                    <button onClick={() => window.print()} className="px-6 py-3 bg-brand-primary text-white font-bold tracking-widest uppercase text-xs rounded-lg hover:bg-brand-primary/90 flex gap-2 items-center transition-colors shadow-sm"><Printer size={16} /> Print 4x6 Labels</button>
+                 </div>
+              </div>
+              
+              <style>{`
+                 @media print {
+                    body * { visibility: hidden !important; }
+                    #root { display: none !important; }
+                    .rack-print-mode, .rack-print-mode * { visibility: visible !important; }
+                    .rack-print-mode {
+                        position: absolute;
+                        left: 0;
+                        top: 0;
+                        width: 100%;
+                        display: block !important;
+                    }
+                 }
+                 @page { size: 4in 6in; margin: 0; }
+              `}</style>
+              
+              <div className="flex-1 overflow-y-auto bg-neutral-100 p-8 print:p-0 print:bg-white rack-print-mode print:static print:h-auto print:overflow-visible print:block">
+                 <div className="flex flex-col items-center gap-8 print:gap-0 print:block">
+                    {(() => {
+                        const rack = currentWarehouse?.racks?.find((r: any) => r.label === printRackLabelRack);
+                        if (!rack) return null;
+                        const labels = [];
+                        const baseUrl = window.location.origin + window.location.pathname;
+                        for (let b = 0; b < rack.bays; b++) {
+                            for (let l = 0; l < rack.levels; l++) {
+                                for (let s of [-1, 0, 1]) {
+                                    const slotStr = s === -1 ? 'SLOT 1' : s === 0 ? 'SLOT 2' : 'SLOT 3';
+                                    const qrUrl = `${baseUrl}?action=place_pallet&wh=${currentWarehouse?.id || defaultWarehouseBlueprint.id}&rack=${encodeURIComponent(rack.label)}&bay=${b}&level=${l}&slot=${s}`;
+                                    labels.push(
+                                        <div key={`${b}-${l}-${s}`} className="bg-white border-8 border-black flex flex-col justify-between items-center text-center overflow-hidden shadow-2xl print:shadow-none print:border-none" style={{ width: '4in', height: '6in', pageBreakAfter: 'always', padding: '0.2in', boxSizing: 'border-box' }}>
+                                            <div className="w-full shrink-0 border-b-4 border-black pb-2 mb-2">
+                                                <h1 className="font-sans text-[36px] font-black uppercase tracking-tighter leading-none truncate">{rack.label}</h1>
+                                                <p className="text-xs font-bold uppercase tracking-widest mt-1">Rack Placement Barcode</p>
+                                            </div>
+                                            
+                                            <div className="flex-1 w-full flex flex-col justify-center items-center">
+                                                <div className="bg-white p-2 border-4 border-black mb-1">
+                                                    <QRCode value={qrUrl} size={150} level="M" />
+                                                </div>
+                                                <div className="flex w-full justify-between items-center px-4 mb-1">
+                                                    <h2 className="font-sans text-[38px] font-black leading-none">BAY {b}</h2>
+                                                    <h2 className="font-sans text-[30px] font-black leading-none text-black/80">LVL {l}</h2>
+                                                </div>
+                                                <div className="w-full bg-black text-white py-1">
+                                                    <h2 className="font-sans text-[36px] font-black leading-none">{slotStr}</h2>
+                                                </div>
+                                            </div>
+                                            
+                                            <div className="w-full shrink-0 border-t-4 border-black pt-2 mt-2">
+                                                <p className="text-[9px] font-bold font-mono tracking-widest uppercase">SCAN TO DROP &middot; AUTO-LOCATE</p>
+                                            </div>
+                                        </div>
+                                    );
+                                }
+                            }
+                        }
+                        return labels;
+                    })()}
+                 </div>
+              </div>
+           </div>,
+           document.body
+        )}
+      </div>
+
+      {/* Full Sheet Modals */}
+      {isInventoryModalOpen && activePallet && (
+         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in zoom-in-95 duration-200">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-8 relative">
+               <button onClick={() => setIsInventoryModalOpen(false)} className="absolute top-6 right-6 font-bold text-brand-secondary hover:text-black">✕</button>
+               <h2 className="font-serif text-3xl font-bold tracking-tight border-b pb-4 mb-6">Manifest Array: {activePallet.id}</h2>
+               <p className="text-sm uppercase tracking-widest text-brand-secondary font-bold mb-4 border-l-4 border-brand-primary pl-3 bg-brand-bg py-2 rounded-r">{activePallet.client}</p>
+               
+               <p className="text-xs font-semibold text-brand-secondary mb-2 uppercase tracking-widest">Contents (Scanned)</p>
+               <div className="bg-[#1e1e1e] rounded-lg p-4 font-mono text-[11px] overflow-auto max-h-64 text-green-400 shadow-inner">
+                   <p className="opacity-70 mb-2">Connecting to warehouse terminal...</p>
+                   <p>[{new Date().toLocaleTimeString()}] - SCANNED: Item 1/42 (SKU: WL-BLK-L)</p>
+                   <p>[{new Date().toLocaleTimeString()}] - SCANNED: Item 2/42 (SKU: WL-BLK-M)</p>
+                   <p>[{new Date().toLocaleTimeString()}] - SCANNED: Item 3/42 (SKU: WL-WHT-S)</p>
+                   <p className="mt-4 text-brand-secondary font-sans italic opacity-60">... 39 additional units properly kitted and shrink-wrapped.</p>
+               </div>
+               
+               <div className="flex gap-4 mt-8">
+                   <button onClick={() => setIsInventoryModalOpen(false)} className="flex-1 border border-brand-border text-brand-primary py-3 rounded-lg font-bold uppercase tracking-widest text-[10px] hover:bg-brand-bg transition-colors">Close Log</button>
+                   <button className="flex-1 bg-black text-white py-3 rounded-lg font-bold uppercase tracking-widest text-[10px] hover:bg-neutral-800 transition-colors shadow-md">Export to CSV</button>
+               </div>
+            </div>
+         </div>
+      )}
+
+      {/* Batch Image Modal */}
+      {showBatchImageModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in zoom-in-95 duration-200">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 flex flex-col relative border border-brand-border">
+                  <h2 className="text-xl font-serif font-bold text-brand-primary mb-1">Batch Update Thumbnails</h2>
+                  <p className="text-[11px] text-brand-secondary mb-6 leading-relaxed">
+                      Enter an Item Name or SKU, and provide a Photo URL. This tool will scan the entire warehouse (all pallets and boxes) and inject the thumbnail into every matching line item.
+                  </p>
+                  
+                  <div className="space-y-4">
+                      <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-2">Match By</label>
+                          <div className="flex bg-brand-bg p-1 rounded-lg border border-brand-border">
+                              <button onClick={() => setBatchMatchType('name')} className={`flex-1 py-2 rounded text-[10px] font-bold uppercase transition-colors ${batchMatchType === 'name' ? 'bg-white shadow-sm text-brand-primary' : 'text-brand-secondary'}`}>Garment Name</button>
+                              <button onClick={() => setBatchMatchType('sku')} className={`flex-1 py-2 rounded text-[10px] font-bold uppercase transition-colors ${batchMatchType === 'sku' ? 'bg-white shadow-sm text-brand-primary' : 'text-brand-secondary'}`}>SKU</button>
+                          </div>
+                      </div>
+                      
+                      <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1">Target {batchMatchType === 'name' ? 'Name' : 'SKU'}</label>
+                          <select value={batchMatchTerm} onChange={e => setBatchMatchTerm(e.target.value)} className="w-full text-sm font-semibold p-3 bg-brand-bg border border-brand-border rounded-lg outline-none focus:border-brand-primary cursor-pointer hover:bg-white transition-colors">
+                              <option value="">Select {batchMatchType === 'name' ? 'Garment Name' : 'SKU'}...</option>
+                              {(batchMatchType === 'name' ? palletStats.names : palletStats.skus).map(opt => (
+                                  <option key={opt} value={opt}>{opt}</option>
+                              ))}
+                          </select>
+                      </div>
+                      
+                      <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1">New Photo URL</label>
+                          <div className="flex gap-2">
+                              <input type="text" value={batchImageUrl} onChange={e => setBatchImageUrl(e.target.value)} className="w-full text-sm font-semibold p-3 bg-brand-bg border border-brand-border rounded-lg outline-none focus:border-brand-primary" placeholder="https://..." />
+                              <button disabled={isBatchUploadingImage} onClick={() => document.getElementById('batch-photo-upload')?.click()} className="shrink-0 px-4 flex items-center justify-center bg-brand-bg border border-brand-border rounded-lg hover:border-brand-primary text-brand-secondary hover:text-brand-primary transition-colors disabled:opacity-50">
+                                  {isBatchUploadingImage ? <span className="animate-pulse text-xs font-bold uppercase">...</span> : <Upload size={16} />}
+                              </button>
+                              <input id="batch-photo-upload" type="file" className="hidden" accept="image/*" onChange={async (e) => {
+                                  const file = e.target.files?.[0];
+                                  if (!file) return;
+                                  setIsBatchUploadingImage(true);
+                                  try {
+                                      const storageRef = ref(storage, `inventory/batch/${Date.now()}_${file.name}`);
+                                      await uploadBytes(storageRef, file);
+                                      const url = await getDownloadURL(storageRef);
+                                      setBatchImageUrl(url);
+                                  } catch (err) {
+                                      console.error("Upload failed", err);
+                                      alert("Failed to upload image");
+                                  } finally {
+                                      setIsBatchUploadingImage(false);
+                                      e.target.value = '';
+                                  }
+                              }} />
+                          </div>
+                      </div>
+                  </div>
+                  
+                  <div className="flex gap-3 justify-end mt-8">
+                      <button onClick={() => setShowBatchImageModal(false)} className="px-5 py-2.5 text-xs font-bold uppercase text-brand-secondary hover:text-black transition-colors rounded-lg">Cancel</button>
+                      <button onClick={handleBatchUpdateImages} disabled={isBatchUpdating} className={`px-6 py-2.5 bg-brand-primary text-white font-bold uppercase tracking-widest text-xs rounded-lg shadow-md transition-all ${isBatchUpdating ? 'opacity-50 cursor-not-allowed' : 'hover:bg-black hover:-translate-y-0.5'}`}>
+                          {isBatchUpdating ? 'Updating...' : 'Update Inventory'}
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Find & Replace Modal */}
+      {showFindReplaceModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in zoom-in-95 duration-200">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 flex flex-col relative border border-brand-border">
+                  <h2 className="text-xl font-serif font-bold text-brand-primary mb-1">Find & Replace</h2>
+                  <p className="text-[11px] text-brand-secondary mb-6 leading-relaxed">
+                      This tool will scan the entire warehouse (all pallets and boxes) and perfectly replace any exact matches of the search term. You can use <b className="text-brand-primary">{`{size}`}</b>, <b className="text-brand-primary">{`{sku}`}</b>, or <b className="text-brand-primary">{`{name}`}</b> in the replace field to dynamically inject the item's properties (e.g. <span className="font-mono bg-brand-bg px-1 py-0.5 border border-brand-border rounded">MYSKU-{`{size}`}</span>).
+                  </p>
+                  
+                  <div className="space-y-4">
+                      <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-2">Target Field</label>
+                          <div className="flex bg-brand-bg p-1 rounded-lg border border-brand-border">
+                              <button onClick={() => setFrTargetField('name')} className={`flex-1 py-2 rounded text-[10px] font-bold uppercase transition-colors ${frTargetField === 'name' ? 'bg-white shadow-sm text-brand-primary' : 'text-brand-secondary'}`}>Garment Name</button>
+                              <button onClick={() => setFrTargetField('sku')} className={`flex-1 py-2 rounded text-[10px] font-bold uppercase transition-colors ${frTargetField === 'sku' ? 'bg-white shadow-sm text-brand-primary' : 'text-brand-secondary'}`}>SKU</button>
+                              <button onClick={() => setFrTargetField('size')} className={`flex-1 py-2 rounded text-[10px] font-bold uppercase transition-colors ${frTargetField === 'size' ? 'bg-white shadow-sm text-brand-primary' : 'text-brand-secondary'}`}>Size</button>
+                          </div>
+                      </div>
+                      
+                      <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1">Search For ({frTargetField})</label>
+                          <select value={frSearchTerm} onChange={e => setFrSearchTerm(e.target.value)} className="w-full text-sm font-semibold p-3 bg-brand-bg border border-brand-border rounded-lg outline-none focus:border-brand-primary cursor-pointer hover:bg-white transition-colors">
+                              <option value="">Select {frTargetField === 'name' ? 'Garment Name' : frTargetField === 'sku' ? 'SKU' : 'Size'}...</option>
+                              {(frTargetField === 'name' ? palletStats.names : frTargetField === 'sku' ? palletStats.skus : palletStats.sizes).map(opt => (
+                                  <option key={opt} value={opt}>{opt}</option>
+                              ))}
+                          </select>
+                      </div>
+                      
+                      <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1">Replace With</label>
+                          <input type="text" value={frReplaceTerm} onChange={e => setFrReplaceTerm(e.target.value)} className="w-full text-sm font-semibold p-3 bg-brand-bg border border-brand-border rounded-lg outline-none focus:border-brand-primary" placeholder="e.g. New Value" />
+                          <div className="flex flex-wrap gap-2 mt-2">
+                              <span className="text-[9px] font-bold uppercase text-brand-secondary py-1 tracking-widest mr-1">Auto-Inject:</span>
+                              <button onClick={() => setFrReplaceTerm(prev => prev + (prev && !prev.endsWith('-') ? '-' : '') + '{size}')} className="px-2 py-1 text-[9px] font-bold uppercase text-brand-primary bg-brand-bg/80 border border-brand-border hover:bg-white hover:border-brand-primary rounded shadow-sm transition-all">+ Size</button>
+                              <button onClick={() => setFrReplaceTerm(prev => prev + (prev && !prev.endsWith('-') ? '-' : '') + '{sku}')} className="px-2 py-1 text-[9px] font-bold uppercase text-brand-primary bg-brand-bg/80 border border-brand-border hover:bg-white hover:border-brand-primary rounded shadow-sm transition-all">+ SKU</button>
+                              <button onClick={() => setFrReplaceTerm(prev => prev + (prev && !prev.endsWith('-') ? '-' : '') + '{name}')} className="px-2 py-1 text-[9px] font-bold uppercase text-brand-primary bg-brand-bg/80 border border-brand-border hover:bg-white hover:border-brand-primary rounded shadow-sm transition-all">+ Name</button>
+                          </div>
+                      </div>
+                  </div>
+                  
+                  <div className="flex gap-3 justify-end mt-8">
+                      <button onClick={() => setShowFindReplaceModal(false)} className="px-5 py-2.5 text-xs font-bold uppercase text-brand-secondary hover:text-black transition-colors rounded-lg">Cancel</button>
+                      <button onClick={handleFindReplace} disabled={isFrUpdating} className={`px-6 py-2.5 bg-brand-primary text-white font-bold uppercase tracking-widest text-xs rounded-lg shadow-md transition-all ${isFrUpdating ? 'opacity-50 cursor-not-allowed' : 'hover:bg-black hover:-translate-y-0.5'}`}>
+                          {isFrUpdating ? 'Updating...' : 'Replace All'}
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      <style>{`
+         @media print {
+            body * { visibility: hidden; }
+            .print-grid, .print-grid * { visibility: visible; }
+            .print-grid { position: absolute; left: 0; top: 0; width: 100%; gap: 20px; }
+            .print-label { page-break-inside: avoid; border: 4px solid black !important; margin-bottom: 20px; border-radius: 12px !important; }
+         }
+      `}</style>
+    </div>
+  );
+}
