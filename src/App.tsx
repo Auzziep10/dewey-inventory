@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Inventory } from './pages/Inventory/Inventory';
 import { InventoryScan } from './pages/Inventory/InventoryScan';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -9,7 +10,7 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, userData, loading } = useAuth();
   
   if (loading || (user && !userData)) {
-    return <div className="min-h-screen flex items-center justify-center bg-white text-black font-serif">Loading...</div>;
+    return <div className="min-h-screen flex items-center justify-center bg-[#070605] text-white font-serif">Loading...</div>;
   }
   
   if (user && userData?.role === 'Pending') {
@@ -31,22 +32,24 @@ function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="/waiting" element={<WaitingRoom />} />
-          
-          <Route path="/" element={<Navigate to="/inventory" replace />} />
-          <Route path="/inventory/scan" element={
-            <PrivateRoute>
-              <InventoryScan />
-            </PrivateRoute>
-          } />
-          <Route path="/inventory/*" element={
-            <PrivateRoute>
-              <Inventory />
-            </PrivateRoute>
-          } />
-        </Routes>
+        <ErrorBoundary>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="/waiting" element={<WaitingRoom />} />
+            
+            <Route path="/" element={<Navigate to="/inventory" replace />} />
+            <Route path="/inventory/scan" element={
+              <PrivateRoute>
+                <InventoryScan />
+              </PrivateRoute>
+            } />
+            <Route path="/inventory/*" element={
+              <PrivateRoute>
+                <Inventory />
+              </PrivateRoute>
+            } />
+          </Routes>
+        </ErrorBoundary>
       </AuthProvider>
     </BrowserRouter>
   );
