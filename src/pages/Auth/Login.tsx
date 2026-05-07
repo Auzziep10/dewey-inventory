@@ -1,12 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { Loader2 } from 'lucide-react';
 
 export function Login() {
   const { signInWithGoogle, user, userData, loading: authLoading } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const blobRef = useRef<HTMLDivElement>(null);
@@ -31,7 +30,8 @@ export function Login() {
       } else if (userData.role === 'Pending') {
         navigate('/waiting');
       } else {
-        const from = location.state?.from || '/';
+        const from = localStorage.getItem('dewey_redirect') || '/';
+        localStorage.removeItem('dewey_redirect');
         navigate(from, { replace: true });
       }
     }

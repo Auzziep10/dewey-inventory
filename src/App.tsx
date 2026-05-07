@@ -23,7 +23,8 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
-    return <Navigate to="/login" state={{ from: `${location.pathname}${location.search}` }} />;
+    localStorage.setItem('dewey_redirect', `${location.pathname}${location.search}`);
+    return <Navigate to="/login" />;
   }
   
   return <>{children}</>;
