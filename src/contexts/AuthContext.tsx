@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut as firebaseSignOut, type User } from 'firebase/auth';
+import { onAuthStateChanged, signInWithRedirect, GoogleAuthProvider, signOut as firebaseSignOut, type User } from 'firebase/auth';
 import { collection, query, where, getDocs, doc, setDoc, updateDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 
@@ -116,7 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
     try {
-      await signInWithPopup(auth, provider);
+      await signInWithRedirect(auth, provider);
     } catch (error) {
       console.error('Error signing in with Google', error);
       throw error;
