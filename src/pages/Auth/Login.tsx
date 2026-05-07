@@ -63,7 +63,7 @@ export function Login() {
       {/* Dynamic Cursor Glow (Warm Amber/Rust Artlist Vibe) */}
       <div 
         ref={blobRef}
-        className="absolute w-[900px] h-[700px] rounded-[100%] blur-[120px] pointer-events-none z-0 transform -translate-x-1/2 -translate-y-1/2 mix-blend-screen opacity-70"
+        className="absolute w-[900px] h-[700px] rounded-[100%] pointer-events-none z-0 transform -translate-x-1/2 -translate-y-1/2 mix-blend-screen opacity-30"
         style={{ 
           left: '50%', top: '50%',
           background: 'radial-gradient(ellipse at center, rgba(228, 107, 64, 0.45) 0%, rgba(164, 59, 34, 0.25) 40%, transparent 70%)'
@@ -71,8 +71,8 @@ export function Login() {
       />
       
       {/* Background static depth glows */}
-      <div className="absolute top-[-10%] left-[-10%] w-[800px] h-[800px] bg-red-900/20 rounded-full blur-[150px] pointer-events-none z-0" />
-      <div className="absolute bottom-[-20%] right-[-10%] w-[1000px] h-[800px] bg-amber-800/10 rounded-full blur-[150px] pointer-events-none z-0" />
+      <div className="absolute top-[-10%] left-[-10%] w-[800px] h-[800px] bg-red-900/10 rounded-full pointer-events-none z-0" />
+      <div className="absolute bottom-[-20%] right-[-10%] w-[1000px] h-[800px] bg-amber-800/5 rounded-full pointer-events-none z-0" />
 
       <div className="relative z-10 flex flex-col items-center w-full max-w-md text-center animate-in fade-in slide-in-from-bottom-12 duration-1000">
         
