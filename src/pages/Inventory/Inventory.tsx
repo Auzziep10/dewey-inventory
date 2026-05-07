@@ -2,7 +2,7 @@ import { useState, useEffect, Suspense, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import * as THREE from 'three';
 import { tokens } from '../../lib/tokens';
-import { PackageOpen, Printer, Boxes, Map, QrCode, Settings, Upload, Search } from 'lucide-react';
+import { PackageOpen, Printer, Boxes, Map, QrCode, Settings, Upload, Search, RotateCw } from 'lucide-react';
 import QRCode from 'react-qr-code';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
@@ -1270,6 +1270,17 @@ export function Inventory() {
                                     : `${activePallet.zone} | Bay ${activePallet.rackSpecs?.bay ?? 0} | Level ${activePallet.rackSpecs?.level ?? 0}${activePallet.rackSpecs?.slot !== undefined ? ` | Slot ${activePallet.rackSpecs.slot === -1 ? '1' : activePallet.rackSpecs.slot === 0 ? '2' : '3'}` : ''}`
                                  }
                               </div>
+                              {activePallet.zone === 'Floor' && (
+                                 <button onClick={async () => {
+                                     const newRot = activePallet.rotation ? [...activePallet.rotation] : [0,0,0];
+                                     newRot[1] += Math.PI / 2; // rotate 90 deg around Y-axis
+                                     const palletRef = doc(db, activePallet._collection || 'pallets', activePallet.id);
+                                     await setDoc(palletRef, { rotation: newRot }, { merge: true });
+                                     setActivePallet({...activePallet, rotation: newRot});
+                                 }} className="mt-2 text-[10px] uppercase font-bold text-brand-primary bg-brand-bg hover:bg-neutral-200 py-1.5 px-3 rounded border border-brand-border transition-colors w-full flex items-center justify-center gap-1">
+                                     <RotateCw size={12} /> Rotate 90°
+                                 </button>
+                              )}
                             </div>
                              <div>
                               <p className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-1">Status</p>
@@ -1541,7 +1552,7 @@ export function Inventory() {
                           </div>
                           <div className="shrink-0 flex items-center justify-center border-l-4 border-dotted border-brand-border/60 pl-8">
                             <div className="bg-white p-2 border-4 border-black inline-block rounded-xl">
-                               <QRCode value={`${window.location.hostname === 'localhost' ? 'https://print-shop-os.vercel.app' : window.location.origin}/inventory/scan?id=${p.id}&loc=${encodeURIComponent(p.location)}`} size={140} />
+                               <QRCode value={`${window.location.hostname === 'localhost' ? 'https://dewey-inventory.vercel.app' : window.location.origin}/inventory/scan?id=${p.id}&loc=${encodeURIComponent(p.location)}`} size={140} />
                             </div>
                           </div>
                        </div>

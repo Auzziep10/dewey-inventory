@@ -1,13 +1,14 @@
 import { useState, useMemo } from 'react';
 import { db } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
-import { LogOut, LogIn, Search, CheckCircle2, AlertCircle, X, Calendar, MapPin, Box } from 'lucide-react';
+import { LogOut, LogIn, Search, CheckCircle2, AlertCircle, X, Calendar, MapPin, Box, Folder, FolderOpen, ChevronLeft } from 'lucide-react';
 
 export function CheckInOutTab({ pallets }: any) {
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedPayload, setSelectedPayload] = useState<any>(null);
     const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
     
+    const [activeFolder, setActiveFolder] = useState<string | null>(null);
     const [destination, setDestination] = useState('');
     const [expectedBack, setExpectedBack] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
@@ -20,6 +21,23 @@ export function CheckInOutTab({ pallets }: any) {
             (p.name && p.name.toLowerCase().includes(searchTerm.toLowerCase()))
         );
     }, [pallets, searchTerm]);
+
+    const folders = useMemo(() => {
+        const fSet = new Set<string>();
+        filteredPallets.forEach((p: any) => {
+            if (p.folderName) fSet.add(p.folderName);
+        });
+        return Array.from(fSet).sort();
+    }, [filteredPallets]);
+
+    const handleChangeFolder = async (e: React.MouseEvent, p: any) => {
+        e.stopPropagation();
+        const newFolder = window.prompt("Enter a folder name to group this payload into (leave blank to remove from folder):", p.folderName || "");
+        if (newFolder !== null) {
+            const palletRef = doc(db, p._collection || 'pallets', p.id);
+            await setDoc(palletRef, { folderName: newFolder.trim() }, { merge: true });
+        }
+    };
 
     const handleProcessEntirePayload = async (action: 'checkout' | 'checkin') => {
         if (!selectedPayload) return;
@@ -215,50 +233,100 @@ export function CheckInOutTab({ pallets }: any) {
             
             {/* Main Grid */}
             <div className="flex-1 p-8 overflow-y-auto custom-scrollbar">
-                {filteredPallets.length > 0 ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                        {filteredPallets.map((p: any) => {
-                            // Calculate how many items are checked out vs total
-                            let totalItems = 0;
-                            let outItems = 0;
-                            p.boxes?.forEach((b: any) => {
-                                b.items?.forEach((i: any) => {
-                                    totalItems++;
-                                    if (i.status === 'Checked Out') outItems++;
-                                });
-                            });
+                {activeFolder && (
+                    <div className="mb-6 flex items-center justify-between bg-white p-4 rounded-xl border border-brand-border shadow-sm">
+                        <div className="flex items-center gap-3">
+                            <button onClick={() => setActiveFolder(null)} className="p-2 hover:bg-brand-bg rounded-lg transition-colors text-brand-secondary hover:text-brand-primary">
+                                <ChevronLeft size={20} />
+                            </button>
+                            <FolderOpen size={24} className="text-brand-primary" />
+                            <h3 className="font-serif text-xl font-bold text-brand-primary">{activeFolder}</h3>
+                        </div>
+                    </div>
+                )}
 
-                            return (
-                                <div 
-                                    key={p.id} 
-                                    onClick={() => handleOpenModal(p)}
-                                    className="bg-white border-2 border-brand-border rounded-2xl p-5 shadow-sm hover:shadow-md hover:border-brand-primary/50 transition-all cursor-pointer relative overflow-hidden group"
-                                >
-                                    {outItems > 0 && (
-                                        <div className="absolute top-0 right-0 w-16 h-16 bg-amber-50 rounded-bl-[100px] flex items-start justify-end p-3 z-0">
-                                            <div className="w-3 h-3 rounded-full bg-amber-500 animate-pulse"></div>
+                {!activeFolder && folders.length > 0 && (
+                    <div className="mb-10">
+                        <h3 className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-4 flex items-center gap-2">
+                            <Folder size={14} /> Folders
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                            {folders.map(folderName => {
+                                const folderPallets = filteredPallets.filter((p: any) => p.folderName === folderName);
+                                return (
+                                    <div 
+                                        key={folderName} 
+                                        onClick={() => setActiveFolder(folderName)}
+                                        className="bg-white border border-brand-border rounded-xl p-5 shadow-sm hover:shadow-md hover:border-brand-primary/50 transition-all cursor-pointer group flex items-center gap-4"
+                                    >
+                                        <div className="w-12 h-12 bg-brand-bg rounded-lg flex items-center justify-center text-brand-primary group-hover:scale-110 transition-transform">
+                                            <Folder size={20} />
                                         </div>
-                                    )}
-                                    
-                                    <div className="relative z-10">
-                                        <div className="flex justify-between items-start mb-3">
-                                            <div className={`inline-block px-2 py-1 text-[9px] font-bold uppercase tracking-widest rounded ${outItems > 0 ? 'bg-amber-100 text-amber-700' : 'bg-brand-bg text-brand-secondary'}`}>
-                                                {p.type || 'PALLET'}
-                                            </div>
-                                            {outItems > 0 && (
-                                                <span className="text-[10px] font-bold text-amber-600 bg-white px-2 py-0.5 rounded shadow-sm border border-amber-100">{outItems} OUT</span>
-                                            )}
-                                        </div>
-                                        <h3 className="font-serif text-xl font-bold text-brand-primary mb-1 truncate">{p.name || 'Unnamed Payload'}</h3>
-                                        <p className="text-[10px] font-mono text-brand-secondary mb-4">{p.id}</p>
-                                        
-                                        <div className="flex items-center gap-2 text-xs font-bold text-brand-secondary">
-                                            <Box size={14} /> {totalItems} Total Line Items
+                                        <div>
+                                            <h4 className="font-serif text-lg font-bold text-brand-primary leading-tight mb-1">{folderName}</h4>
+                                            <p className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary">{folderPallets.length} Payloads</p>
                                         </div>
                                     </div>
-                                </div>
-                            );
-                        })}
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
+
+                {filteredPallets.length > 0 ? (
+                    <div>
+                        {!activeFolder && folders.length > 0 && (
+                            <h3 className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-4">Loose Payloads</h3>
+                        )}
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                            {filteredPallets.filter((p: any) => activeFolder ? p.folderName === activeFolder : !p.folderName).map((p: any) => {
+                                // Calculate how many items are checked out vs total
+                                let totalItems = 0;
+                                let outItems = 0;
+                                p.boxes?.forEach((b: any) => {
+                                    b.items?.forEach((i: any) => {
+                                        totalItems++;
+                                        if (i.status === 'Checked Out') outItems++;
+                                    });
+                                });
+
+                                return (
+                                    <div 
+                                        key={p.id} 
+                                        onClick={() => handleOpenModal(p)}
+                                        className="bg-white border-2 border-brand-border rounded-2xl p-5 shadow-sm hover:shadow-md hover:border-brand-primary/50 transition-all cursor-pointer relative overflow-hidden group"
+                                    >
+                                        {outItems > 0 && (
+                                            <div className="absolute top-0 right-0 w-16 h-16 bg-amber-50 rounded-bl-[100px] flex items-start justify-end p-3 z-0">
+                                                <div className="w-3 h-3 rounded-full bg-amber-500 animate-pulse"></div>
+                                            </div>
+                                        )}
+                                        
+                                        <div className="relative z-10">
+                                            <div className="flex justify-between items-start mb-3">
+                                                <div className={`inline-block px-2 py-1 text-[9px] font-bold uppercase tracking-widest rounded ${outItems > 0 ? 'bg-amber-100 text-amber-700' : 'bg-brand-bg text-brand-secondary'}`}>
+                                                    {p.type || 'PALLET'}
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <button onClick={(e) => handleChangeFolder(e, p)} className="p-1 text-brand-secondary hover:text-brand-primary hover:bg-brand-bg rounded opacity-0 group-hover:opacity-100 transition-all" title="Move to Folder">
+                                                        <Folder size={14} />
+                                                    </button>
+                                                    {outItems > 0 && (
+                                                        <span className="text-[10px] font-bold text-amber-600 bg-white px-2 py-0.5 rounded shadow-sm border border-amber-100">{outItems} OUT</span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                            <h3 className="font-serif text-xl font-bold text-brand-primary mb-1 truncate">{p.name || 'Unnamed Payload'}</h3>
+                                            <p className="text-[10px] font-mono text-brand-secondary mb-4">{p.id}</p>
+                                            
+                                            <div className="flex items-center gap-2 text-xs font-bold text-brand-secondary">
+                                                <Box size={14} /> {totalItems} Total Line Items
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
                     </div>
                 ) : (
                     <div className="flex flex-col items-center justify-center h-full text-center max-w-md mx-auto">

@@ -919,7 +919,7 @@ export function PalletsTab({ onJumpToWarehouse, initialActivePalletId }: { onJum
                                             <div className="shrink-0 flex flex-col items-center justify-between border-l-2 border-black pl-2 w-20">
                                                 <div className="flex flex-col items-center">
                                                     <div className="p-0.5 border-2 border-black bg-white mb-1">
-                                                        <QRCode value={`${window.location.hostname === 'localhost' ? 'https://print-shop-os.vercel.app' : window.location.origin}/inventory/scan?p=${printingBox.pallet.id}&b=${boxToPrint.id}`} size={48} level="L" />
+                                                        <QRCode value={`${window.location.hostname === 'localhost' ? 'https://dewey-inventory.vercel.app' : window.location.origin}/inventory/scan?p=${printingBox.pallet.id}&b=${boxToPrint.id}`} size={48} level="L" />
                                                     </div>
                                                     <p className="text-[6px] font-black uppercase tracking-widest text-center mt-0.5 w-full text-black">Scan to View Info</p>
                                                 </div>
@@ -960,7 +960,7 @@ export function PalletsTab({ onJumpToWarehouse, initialActivePalletId }: { onJum
                                  
                                  <div className="shrink-0 flex flex-col items-center justify-center border-l-2 border-black pl-3 pr-1">
                                      <div className="p-1 border-2 border-black bg-white mb-1">
-                                         <QRCode value={`${window.location.hostname === 'localhost' ? 'https://print-shop-os.vercel.app' : window.location.origin}/inventory/scan?p=${printingBox.pallet.id}`} size={48} level="M" />
+                                         <QRCode value={`${window.location.hostname === 'localhost' ? 'https://dewey-inventory.vercel.app' : window.location.origin}/inventory/scan?p=${printingBox.pallet.id}`} size={48} level="M" />
                                      </div>
                                      <p className="text-[7px] font-black uppercase tracking-widest text-center w-full text-black leading-tight">Scan To Register<br/>Boxes</p>
                                  </div>
@@ -1029,7 +1029,7 @@ export function PalletsTab({ onJumpToWarehouse, initialActivePalletId }: { onJum
                                                         <span className="text-[9px] uppercase font-bold text-gray-800">{totalUnits} Units</span>
                                                     </div>
                                                     <div className="shrink-0 flex items-center justify-center pr-2">
-                                                        <QRCode value={`${window.location.hostname === 'localhost' ? 'https://print-shop-os.vercel.app' : window.location.origin}/inventory/scan?p=${printingBox.pallet.id}&b=${lbl.box.id}`} size={56} level="L" />
+                                                        <QRCode value={`${window.location.hostname === 'localhost' ? 'https://dewey-inventory.vercel.app' : window.location.origin}/inventory/scan?p=${printingBox.pallet.id}&b=${lbl.box.id}`} size={56} level="L" />
                                                     </div>
                                                   </div>
                                                 </div>
@@ -1076,7 +1076,7 @@ export function PalletsTab({ onJumpToWarehouse, initialActivePalletId }: { onJum
                    <p className="text-[10px] font-bold uppercase tracking-widest text-brand-secondary mb-6">{mobileQrPallet.id}</p>
                    
                    <div className="bg-white p-4 border-4 border-black rounded-xl mb-6 shadow-sm">
-                       <QRCode value={`${window.location.hostname === 'localhost' ? 'https://print-shop-os.vercel.app' : window.location.origin}/inventory/scan?id=${mobileQrPallet.id}`} size={200} />
+                       <QRCode value={`${window.location.hostname === 'localhost' ? 'https://dewey-inventory.vercel.app' : window.location.origin}/inventory/scan?id=${mobileQrPallet.id}`} size={200} />
                    </div>
                    
                    <p className="text-xs text-center text-brand-secondary px-4 font-medium leading-relaxed">
@@ -1093,7 +1093,7 @@ export function PalletsTab({ onJumpToWarehouse, initialActivePalletId }: { onJum
        <style>{`
           @page { 
              margin: 0; 
-             size: ${printingBox?.type === 'items' || printingBox?.type === 'all_boxes' ? 'letter' : '4in 6in'}; 
+             size: ${printingBox?.type === 'items' || printingBox?.type === 'all_boxes' ? 'letter' : '3in 2in'}; 
           }
           @media print {
              body * { visibility: hidden !important; }
@@ -1119,33 +1119,33 @@ export function PalletsTab({ onJumpToWarehouse, initialActivePalletId }: { onJum
                  display: block !important;
              }
 
-             /* For Box Route Thermal Label (6x4 Landscape rotated to 4x6 Portrait) */
+             /* For Standard 3x2 Thermal Label */
              .print-thermal-mode .print-page-wrapper, .print-thermal-mode .print-page-wrapper * { visibility: visible !important; }
              
              .print-thermal-mode .print-page-wrapper {
                  display: block !important;
                  position: relative !important;
-                 width: 4in !important;
-                 height: 6in !important;
+                 width: 3in !important;
+                 height: 2in !important;
                  page-break-after: always !important;
                  page-break-inside: avoid !important;
                  margin: 0 !important;
                  padding: 0 !important;
                  background: white !important;
+                 overflow: hidden !important;
              }
              .print-thermal-mode .print-label-container {
-                 position: absolute !important;
-                 left: 3.9in !important;
-                 top: 0.1in !important;
-                 width: 5.8in !important;
-                 height: 3.8in !important;
-                 padding: 0.3in !important;
+                 position: relative !important;
+                 left: 0 !important;
+                 top: 0 !important;
+                 width: 3in !important;
+                 height: 2in !important;
+                 padding: 0.25in !important;
                  margin: 0 !important;
                  border: none !important;
                  box-sizing: border-box !important;
                  box-shadow: none !important;
-                 transform: rotate(90deg);
-                 transform-origin: top left;
+                 transform: none !important;
              }
 
              /* For Avery 5160 Item Labels (8.5x11 Portrait) */
