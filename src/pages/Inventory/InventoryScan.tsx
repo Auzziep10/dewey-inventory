@@ -26,26 +26,15 @@ export function InventoryScan() {
   const [newItemForm, setNewItemForm] = useState({ sku: '', name: '', size: '', quantity: 1 });
 
   useEffect(() => {
-     let palletsData: any[] = [];
      let eventsData: any[] = [];
      
-     const processData = () => {
-         setPallets([...palletsData, ...eventsData]);
-         setLoading(false);
-     };
-
-     const unsubPallets = onSnapshot(query(collection(db, 'pallets')), (snapshot) => {
-         palletsData = snapshot.docs.map(d => ({...d.data(), _collection: 'pallets'}));
-         processData();
-     });
-
      const unsubEvents = onSnapshot(query(collection(db, 'event_items')), (snapshot) => {
          eventsData = snapshot.docs.map(d => ({...d.data(), _collection: 'event_items'}));
-         processData();
+         setPallets(eventsData);
+         setLoading(false);
      });
 
      return () => {
-         unsubPallets();
          unsubEvents();
      };
   }, []);
@@ -97,7 +86,9 @@ export function InventoryScan() {
           <div className="min-h-screen bg-brand-bg p-4 flex flex-col items-center justify-center">
               <Package size={64} className="mb-6 opacity-80" />
               <h1 className="font-serif text-4xl font-bold tracking-tight mb-2">{currentPallet.name}</h1>
-              <p className="text-sm font-bold uppercase tracking-widest text-brand-secondary mb-8">Pallet Record</p>
+              <p className="text-sm font-bold uppercase tracking-widest text-brand-secondary mb-8">
+                  {currentPallet._collection === 'event_items' ? `${currentPallet.type || 'ROAD CASE'} RECORD` : 'PALLET RECORD'}
+              </p>
               
               <div className="w-full max-w-md space-y-4 mb-6 relative">
                   {/* Status Module */}
@@ -153,8 +144,9 @@ export function InventoryScan() {
                       )}
                   </div>
 
-                  {/* Register New Box Module */}
-                  <div className="bg-white p-6 rounded-2xl shadow-lg border border-brand-border">
+                  {/* Register New Box Module - HIDDEN FOR EVENT ITEMS */}
+                  {currentPallet._collection !== 'event_items' && (
+                      <div className="bg-white p-6 rounded-2xl shadow-lg border border-brand-border">
                       <div className="flex justify-between items-center pb-4 border-b">
                           <span className="text-xs uppercase font-bold tracking-widest text-brand-secondary">Units Logged</span>
                           <span className="font-black text-xl">{currentPallet.boxes?.length || 0} Boxes</span>
@@ -178,11 +170,14 @@ export function InventoryScan() {
                           </button>
                       </div>
                   </div>
+                  )}
 
                   {/* List of existing boxes */}
                   {currentPallet.boxes && currentPallet.boxes.length > 0 && (
                       <div className="bg-white p-6 rounded-2xl shadow-lg border border-brand-border">
-                         <h2 className="text-xs uppercase font-bold tracking-widest text-brand-secondary mb-4">Current Payload Menu</h2>
+                         <h2 className="text-xs uppercase font-bold tracking-widest text-brand-secondary mb-4">
+                             {currentPallet._collection === 'event_items' ? 'Internal Inventory' : 'Current Payload Menu'}
+                         </h2>
                          <div className="space-y-3">
                              {currentPallet.boxes.map((b: any) => (
                                  <div key={b.id} className="flex justify-between items-center py-3 border-b border-gray-100 last:border-0 group">
@@ -208,41 +203,43 @@ export function InventoryScan() {
                                         )}
                                      </div>
                                      <div className="flex items-center gap-2 shrink-0">
-                                         <button 
-                                            onClick={async () => {
-                                                let maxNum = 0;
-                                                currentPallet.boxes?.forEach((existingBox: any) => {
-                                                    const match = existingBox.name.match(/(?:Box\s*)?(\d+)$/i);
-                                                    if (match) {
-                                                        const num = parseInt(match[1]);
-                                                        if (num > maxNum) maxNum = num;
+                                         {currentPallet._collection !== 'event_items' && (
+                                             <button 
+                                                onClick={async () => {
+                                                    let maxNum = 0;
+                                                    currentPallet.boxes?.forEach((existingBox: any) => {
+                                                        const match = existingBox.name.match(/(?:Box\s*)?(\d+)$/i);
+                                                        if (match) {
+                                                            const num = parseInt(match[1]);
+                                                            if (num > maxNum) maxNum = num;
+                                                        }
+                                                    });
+                                                    const prefixMatch = b.name.match(/^(.*?)\s*\d+$/);
+                                                    const prefix = prefixMatch ? prefixMatch[1].trim() : 'Box';
+                                                    
+                                                    const clonedBox = {
+                                                        ...b,
+                                                        id: `box_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+                                                        name: `${prefix} ${maxNum + 1}`,
+                                                        items: b.items?.map((item: any) => ({
+                                                            ...item,
+                                                            id: `itm_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`
+                                                        })) || []
+                                                    };
+                                          
+                                                    try {
+                                                        const updatedBoxes = [...(currentPallet.boxes || []), clonedBox];
+                                                        await setDoc(doc(db, currentPallet._collection || 'pallets', currentPallet.id), { ...currentPallet, boxes: updatedBoxes });
+                                                    } catch (err) {
+                                                        console.error(err);
                                                     }
-                                                });
-                                                const prefixMatch = b.name.match(/^(.*?)\s*\d+$/);
-                                                const prefix = prefixMatch ? prefixMatch[1].trim() : 'Box';
-                                                
-                                                const clonedBox = {
-                                                    ...b,
-                                                    id: `box_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-                                                    name: `${prefix} ${maxNum + 1}`,
-                                                    items: b.items?.map((item: any) => ({
-                                                        ...item,
-                                                        id: `itm_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`
-                                                    })) || []
-                                                };
-                                      
-                                                try {
-                                                    const updatedBoxes = [...(currentPallet.boxes || []), clonedBox];
-                                                    await setDoc(doc(db, 'pallets', currentPallet.id), { ...currentPallet, boxes: updatedBoxes });
-                                                } catch (err) {
-                                                    console.error(err);
-                                                }
-                                            }}
-                                            className="w-10 h-10 rounded-xl bg-gray-50 border border-gray-200 flex items-center justify-center text-brand-primary hover:bg-black hover:text-white transition-all active:scale-95 shadow-sm"
-                                            title="Duplicate Box"
-                                         >
-                                             <Copy size={16} />
-                                         </button>
+                                                }}
+                                                className="w-10 h-10 rounded-xl bg-gray-50 border border-gray-200 flex items-center justify-center text-brand-primary hover:bg-black hover:text-white transition-all active:scale-95 shadow-sm"
+                                                title="Duplicate Box"
+                                             >
+                                                 <Copy size={16} />
+                                             </button>
+                                         )}
                                          <button 
                                             onClick={() => setSearchParams({ p: currentPallet.id, b: b.id })}
                                             className="w-10 h-10 rounded-xl bg-brand-bg border border-brand-border flex items-center justify-center text-brand-primary hover:bg-brand-primary hover:text-white transition-all active:scale-95 shadow-sm"

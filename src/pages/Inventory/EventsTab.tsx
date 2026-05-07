@@ -1087,10 +1087,10 @@ export function EventsTab({ onJumpToWarehouse, initialActivePalletId }: { onJump
                              <div className="flex justify-between items-start mb-2 border-b-2 border-black pb-2 shrink-0">
                                  <div>
                                      <img src="/logo.png" alt="Catalyst" className="h-4 w-auto mb-1.5 grayscale" />
-                                     <h1 className="font-sans text-xl font-black uppercase tracking-tighter leading-none">{printingBox.pallet.name}</h1>
+                                     <h1 className="font-sans text-lg font-black uppercase leading-tight pr-2">{printingBox.pallet.name}</h1>
                                  </div>
                                  <div className="text-right">
-                                     <div className="text-[10px] font-black font-sans uppercase tracking-widest bg-black text-white px-2 py-1 inline-block">{printingBox.pallet.type ? printingBox.pallet.type.toUpperCase() : "MASTER"}</div>
+                                     <div className="text-[10px] font-black font-sans uppercase tracking-widest text-black border-2 border-black px-2 py-0.5 inline-block">{printingBox.pallet.type ? printingBox.pallet.type.toUpperCase() : "MASTER"}</div>
                                      <p className="text-[8px] font-bold uppercase tracking-widest mt-1">ID: {printingBox.pallet.id.replace('pal_', '')}</p>
                                  </div>
                              </div>
