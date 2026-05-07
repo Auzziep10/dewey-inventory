@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Inventory } from './pages/Inventory/Inventory';
+import { InventoryScan } from './pages/Inventory/InventoryScan';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Login } from './pages/Auth/Login';
 import { WaitingRoom } from './pages/Auth/WaitingRoom';
@@ -35,6 +36,11 @@ function App() {
           <Route path="/waiting" element={<WaitingRoom />} />
           
           <Route path="/" element={<Navigate to="/inventory" replace />} />
+          <Route path="/inventory/scan" element={
+            <PrivateRoute>
+              <InventoryScan />
+            </PrivateRoute>
+          } />
           <Route path="/inventory/*" element={
             <PrivateRoute>
               <Inventory />
