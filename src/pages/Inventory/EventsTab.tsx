@@ -55,7 +55,7 @@ export function EventsTab({ onJumpToWarehouse, initialActivePalletId }: { onJump
   const [sortOption, setSortOption] = useState<'newest' | 'oldest' | 'alpha' | 'boxes'>('newest');
   const [mobileQrPallet, setMobileQrPallet] = useState<Pallet | null>(null);
   
-  const [printingBox, setPrintingBox] = useState<{pallet: Pallet, box: BoxType | null, type: 'box' | 'items' | 'all_boxes' | 'pallet' | 'all_boxes_thermal' | 'single_item', item?: Item} | null>(null);
+  const [printingBox, setPrintingBox] = useState<{pallet: Pallet, box: BoxType | null, type: 'box' | 'items' | 'all_boxes' | 'pallet' | 'all_boxes_thermal' | 'single_item' | 'master_and_items', item?: Item} | null>(null);
   const [showPrintAllDialog, setShowPrintAllDialog] = useState(false);
 
   // Form states
@@ -796,6 +796,13 @@ export function EventsTab({ onJumpToWarehouse, initialActivePalletId }: { onJump
                                         >
                                            <Copy size={14} /> Duplicate Payload
                                         </button>
+                                        
+                                        <button 
+                                           onClick={() => setPrintingBox({ pallet: activePallet, box: activeBox, type: 'master_and_items' })}
+                                           className="bg-black text-white border border-black w-full px-5 py-2 rounded-lg font-bold uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 hover:bg-black/80 transition-all shadow-sm"
+                                        >
+                                           <Printer size={14} /> Print Manifest Sequence
+                                        </button>
 
                                         <button 
                                            onClick={() => handleDeleteBox(activePallet.id, activeBox.id, activeBox.name)}
@@ -1147,6 +1154,76 @@ export function EventsTab({ onJumpToWarehouse, initialActivePalletId }: { onJump
                                      </div>
                                  </div>
                              </div>
+                         </div>
+                     ) : printingBox.type === 'master_and_items' && printingBox.pallet && printingBox.box ? (
+                         /* Thermal Label Sequence: Master Pallet Tag followed by all Items */
+                         <div className="flex flex-col gap-8 print:gap-0 w-full items-center">
+                             {/* The Master Pallet Thermal Label */}
+                             <div className="print-page-wrapper">
+                                 <div className="bg-white p-3 border-2 border-black print-label-container my-auto print:shadow-none print:border-none print:m-0 overflow-hidden flex flex-col" style={{ width: '3in', height: '2in', boxSizing: 'border-box' }}>
+                                     <div className="flex justify-between items-start mb-2 border-b-2 border-black pb-2 shrink-0">
+                                         <div>
+                                             <img src="/logo.png" alt="Catalyst" className="h-4 w-auto mb-1.5 grayscale" />
+                                             <h1 className="font-sans text-lg font-black uppercase leading-tight pr-2">{printingBox.pallet.name}</h1>
+                                         </div>
+                                         <div className="text-right">
+                                             <div className="text-[10px] font-black font-sans uppercase tracking-widest text-black border-2 border-black px-2 py-0.5 inline-block">{printingBox.pallet.type ? printingBox.pallet.type.toUpperCase() : "MASTER"}</div>
+                                             <p className="text-[8px] font-bold uppercase tracking-widest mt-1">ID: {printingBox.pallet.id.replace('pal_', '')}</p>
+                                         </div>
+                                     </div>
+
+                                     <div className="flex gap-2 flex-1 items-center justify-between min-h-0 pl-1">
+                                         <div className="flex-1 shrink-0">
+                                             <div className="text-2xl font-black font-sans tracking-tighter leading-none">
+                                                 {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 
+                                                     ? printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length 
+                                                     : (printingBox.pallet.boxes.find((b: any) => b.name === 'Loose Items')?.items.reduce((s: number, i: any) => s + i.quantity, 0) || 0)}
+                                             </div>
+                                             <div className="text-[10px] font-black font-sans uppercase tracking-widest mt-1 border-t-2 border-black pt-1 max-w-[100px]">
+                                                 {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 ? "Active Boxes Logged" : "Active Items Logged"}
+                                             </div>
+                                             <p className="text-[6px] font-bold uppercase tracking-widest mt-2 opacity-70">Date: {new Date().toLocaleDateString()} {new Date().toLocaleTimeString()}</p>
+                                         </div>
+                                         
+                                         <div className="shrink-0 flex flex-col items-center justify-center border-l-2 border-black pl-3 pr-1">
+                                             <div className="p-1 border-2 border-black bg-white mb-1">
+                                                 <QRCode value={`${window.location.hostname === 'localhost' ? 'https://dewey-inventory.vercel.app' : window.location.origin}/inventory/scan?p=${printingBox.pallet.id}`} size={48} level="M" />
+                                             </div>
+                                             <p className="text-[7px] font-black uppercase tracking-widest text-center w-full text-black leading-tight whitespace-pre-wrap">
+                                                 {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 ? "Scan To Register\nBoxes" : "Scan To Register\nItems"}
+                                             </p>
+                                         </div>
+                                     </div>
+                                 </div>
+                             </div>
+                             
+                             {/* All Single Item Labels */}
+                             {printingBox.box.items.map(item => (
+                                 <div key={item.id} className="print-page-wrapper mt-4 print:mt-0">
+                                     <div className="bg-white p-3 border-2 border-black print-label-container my-auto print:shadow-none print:border-none print:m-0 overflow-hidden flex flex-col" style={{ width: '3in', height: '2in', boxSizing: 'border-box' }}>
+                                         <div className="flex justify-between items-start mb-1 border-b-2 border-black pb-1 shrink-0">
+                                             <div>
+                                                 <h1 className="font-sans text-xl font-black uppercase tracking-tighter leading-none line-clamp-1">{item.name}</h1>
+                                                 <p className="text-[8px] font-bold uppercase tracking-widest mt-0.5">SKU: {item.sku || 'N/A'}</p>
+                                             </div>
+                                         </div>
+            
+                                         <div className="flex gap-2 flex-1 items-center justify-between min-h-0 pl-1">
+                                             <div className="flex-1 shrink-0">
+                                                 <div className="text-[8px] font-black font-sans uppercase tracking-widest mb-0.5 opacity-70">Located In:</div>
+                                                 <div className="text-[11px] font-bold font-sans uppercase leading-none max-w-[120px] truncate">{printingBox.pallet.name}</div>
+                                                 <div className="text-[8px] font-bold font-sans uppercase mt-0.5">{printingBox.box?.name}</div>
+                                             </div>
+                                             
+                                             <div className="shrink-0 flex flex-col items-center justify-center pl-2 pr-1">
+                                                 <div className="p-1 border-2 border-black bg-white">
+                                                     <QRCode value={`${window.location.hostname === 'localhost' ? 'https://dewey-inventory.vercel.app' : window.location.origin}/inventory/scan?p=${printingBox.pallet.id}&b=${printingBox.box?.id}&i=${item.id}`} size={100} level="M" />
+                                                 </div>
+                                             </div>
+                                         </div>
+                                     </div>
+                                 </div>
+                             ))}
                          </div>
                      ) : (() => {
                         // Avery 5160 Label Mode
