@@ -508,6 +508,15 @@ export const defaultWarehouseBlueprint = {
 
 
 export function Inventory() {
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
   const [mainTab, setMainTab] = useState<'Warehouse' | 'Pallets' | 'Events' | 'CheckInOut'>('Warehouse');
   const [activeTab, setActiveTab] = useState('Map');
   const [activeRack, setActiveRack] = useState<string | null>(null);
@@ -625,6 +634,19 @@ export function Inventory() {
          unsubEvents();
      };
   }, [currentWarehouse]);
+
+  if (isMobile) {
+      return (
+          <div className="min-h-screen bg-brand-bg flex flex-col items-center justify-center p-6 text-center">
+              <div className="bg-white p-8 rounded-2xl shadow-xl max-w-sm border border-brand-border">
+                  <h1 className="font-serif text-2xl font-bold tracking-tight mb-4 text-brand-primary">Mobile Scanner</h1>
+                  <p className="text-sm font-medium text-brand-secondary mb-6">
+                      The 3D Warehouse Map is only available on desktop devices. Please use your phone's camera to scan a physical QR code.
+                  </p>
+              </div>
+          </div>
+      );
+  }
 
   const [isAddingPallet, setIsAddingPallet] = useState(false);
   const [isInventoryModalOpen, setIsInventoryModalOpen] = useState(false);
