@@ -1090,37 +1090,35 @@ export function EventsTab({ onJumpToWarehouse, initialActivePalletId }: { onJump
                          /* The Master Pallet Thermal Label */
                          <div className="flex w-full h-full items-center justify-center">
                              <div className="print-page-wrapper">
-                                 <div className="bg-white p-3 border-2 border-black print-label-container my-auto print:shadow-none print:border-none print:m-0 overflow-hidden flex flex-col" style={{ width: '3in', height: '2in', boxSizing: 'border-box' }}>
-                             <div className="flex justify-between items-start mb-2 border-b-2 border-black pb-2 shrink-0">
-                                 <div>
-                                     <img src="/logo.png" alt="Catalyst" className="h-4 w-auto mb-1.5 grayscale" />
-                                     <h1 className="font-sans text-lg font-black uppercase leading-tight pr-2">{printingBox.pallet.name}</h1>
+                                 <div className="bg-white p-2 border-2 border-black print-label-container my-auto print:shadow-none print:border-none print:m-0 overflow-hidden flex flex-col justify-between" style={{ width: '3in', height: '2in', boxSizing: 'border-box' }}>
+                             <div className="flex justify-between items-start shrink-0 mb-1">
+                                 <div className="flex items-center gap-2">
+                                     <img src="/logo.png" alt="Catalyst" className="h-4 w-auto grayscale" />
+                                     <div className="text-[10px] font-black font-sans uppercase tracking-widest text-black border-2 border-black px-1.5 py-0.5 leading-none">{printingBox.pallet.type ? printingBox.pallet.type.toUpperCase() : "MASTER"}</div>
                                  </div>
                                  <div className="text-right">
-                                     <div className="text-[10px] font-black font-sans uppercase tracking-widest text-black border-2 border-black px-2 py-0.5 inline-block">{printingBox.pallet.type ? printingBox.pallet.type.toUpperCase() : "MASTER"}</div>
-                                     <p className="text-[8px] font-bold uppercase tracking-widest mt-1">ID: {printingBox.pallet.id.replace('pal_', '')}</p>
+                                     <p className="text-[6px] font-bold uppercase tracking-widest leading-none mt-0.5">ID: {printingBox.pallet.id.replace('pal_', '').replace('evt_', '')}</p>
                                  </div>
                              </div>
+                             <h1 className="font-sans text-xl font-black uppercase leading-none truncate w-full mb-1 border-b-2 border-black pb-1 shrink-0">{printingBox.pallet.name}</h1>
 
-                             <div className="flex gap-2 flex-1 items-center justify-between min-h-0 pl-1">
-                                 <div className="flex-1 shrink-0">
-                                     <div className="text-2xl font-black font-sans tracking-tighter leading-none">
+                             <div className="flex flex-1 min-h-0 pt-0.5">
+                                 <div className="flex-1 shrink-0 flex flex-col justify-center">
+                                     <div className="text-3xl font-black font-sans tracking-tighter leading-none mb-1">
                                          {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 
                                              ? printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length 
                                              : (printingBox.pallet.boxes.find((b: any) => b.name === 'Loose Items')?.items.reduce((s: number, i: any) => s + i.quantity, 0) || 0)}
                                      </div>
-                                     <div className="text-[10px] font-black font-sans uppercase tracking-widest mt-1 border-t-2 border-black pt-1 max-w-[100px]">
-                                         {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 ? "Active Boxes Logged" : "Active Items Logged"}
+                                     <div className="text-[8px] font-black font-sans uppercase tracking-widest mt-1 border-t-2 border-black pt-1 max-w-[100px] leading-tight whitespace-pre-wrap">
+                                         {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 ? "Active Boxes\nLogged" : "Active Items\nLogged"}
                                      </div>
-                                     <p className="text-[6px] font-bold uppercase tracking-widest mt-2 opacity-70">Date: {new Date().toLocaleDateString()} {new Date().toLocaleTimeString()}</p>
+                                     <p className="text-[5px] font-bold uppercase tracking-widest mt-2 opacity-70">Date: {new Date().toLocaleDateString()} {new Date().toLocaleTimeString()}</p>
                                  </div>
                                  
-                                 <div className="shrink-0 flex flex-col items-center justify-center border-l-2 border-black pl-3 pr-1">
-                                     <div className="p-1 border-2 border-black bg-white mb-1">
-                                         <QRCode value={`${window.location.hostname === 'localhost' ? 'https://dewey-inventory.vercel.app' : window.location.origin}/inventory/scan?p=${printingBox.pallet.id}`} size={48} level="M" />
-                                     </div>
-                                     <p className="text-[7px] font-black uppercase tracking-widest text-center w-full text-black leading-tight whitespace-pre-wrap">
-                                         {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 ? "Scan To Register\nBoxes" : "Scan To Register\nItems"}
+                                 <div className="shrink-0 flex flex-col items-center justify-center border-l-2 border-black pl-3 ml-2">
+                                     <QRCode value={`${window.location.hostname === 'localhost' ? 'https://dewey-inventory.vercel.app' : window.location.origin}/inventory/scan?p=${printingBox.pallet.id}`} size={56} level="M" />
+                                     <p className="text-[5px] font-black uppercase tracking-widest text-center w-full text-black leading-none mt-1 whitespace-pre-wrap">
+                                         {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 ? "SCAN TO VIEW\nBOXES" : "SCAN TO VIEW\nITEMS"}
                                      </p>
                                  </div>
                              </div>
@@ -1161,36 +1159,34 @@ export function EventsTab({ onJumpToWarehouse, initialActivePalletId }: { onJump
                              {/* The Master Pallet Thermal Label */}
                              <div className="print-page-wrapper">
                                  <div className="bg-white p-3 border-2 border-black print-label-container my-auto print:shadow-none print:border-none print:m-0 overflow-hidden flex flex-col" style={{ width: '3in', height: '2in', boxSizing: 'border-box' }}>
-                                     <div className="flex justify-between items-start mb-2 border-b-2 border-black pb-2 shrink-0">
-                                         <div>
-                                             <img src="/logo.png" alt="Catalyst" className="h-4 w-auto mb-1.5 grayscale" />
-                                             <h1 className="font-sans text-lg font-black uppercase leading-tight pr-2">{printingBox.pallet.name}</h1>
+                                     <div className="flex justify-between items-start shrink-0 mb-1">
+                                         <div className="flex items-center gap-2">
+                                             <img src="/logo.png" alt="Catalyst" className="h-4 w-auto grayscale" />
+                                             <div className="text-[10px] font-black font-sans uppercase tracking-widest text-black border-2 border-black px-1.5 py-0.5 leading-none">{printingBox.pallet.type ? printingBox.pallet.type.toUpperCase() : "MASTER"}</div>
                                          </div>
                                          <div className="text-right">
-                                             <div className="text-[10px] font-black font-sans uppercase tracking-widest text-black border-2 border-black px-2 py-0.5 inline-block">{printingBox.pallet.type ? printingBox.pallet.type.toUpperCase() : "MASTER"}</div>
-                                             <p className="text-[8px] font-bold uppercase tracking-widest mt-1">ID: {printingBox.pallet.id.replace('pal_', '')}</p>
+                                             <p className="text-[6px] font-bold uppercase tracking-widest leading-none mt-0.5">ID: {printingBox.pallet.id.replace('pal_', '').replace('evt_', '')}</p>
                                          </div>
                                      </div>
+                                     <h1 className="font-sans text-xl font-black uppercase leading-none truncate w-full mb-1 border-b-2 border-black pb-1 shrink-0">{printingBox.pallet.name}</h1>
 
-                                     <div className="flex gap-2 flex-1 items-center justify-between min-h-0 pl-1">
-                                         <div className="flex-1 shrink-0">
-                                             <div className="text-2xl font-black font-sans tracking-tighter leading-none">
+                                     <div className="flex flex-1 min-h-0 pt-0.5">
+                                         <div className="flex-1 shrink-0 flex flex-col justify-center">
+                                             <div className="text-3xl font-black font-sans tracking-tighter leading-none mb-1">
                                                  {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 
                                                      ? printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length 
                                                      : (printingBox.pallet.boxes.find((b: any) => b.name === 'Loose Items')?.items.reduce((s: number, i: any) => s + i.quantity, 0) || 0)}
                                              </div>
-                                             <div className="text-[10px] font-black font-sans uppercase tracking-widest mt-1 border-t-2 border-black pt-1 max-w-[100px]">
-                                                 {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 ? "Active Boxes Logged" : "Active Items Logged"}
+                                             <div className="text-[8px] font-black font-sans uppercase tracking-widest mt-1 border-t-2 border-black pt-1 max-w-[100px] leading-tight whitespace-pre-wrap">
+                                                 {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 ? "Active Boxes\nLogged" : "Active Items\nLogged"}
                                              </div>
-                                             <p className="text-[6px] font-bold uppercase tracking-widest mt-2 opacity-70">Date: {new Date().toLocaleDateString()} {new Date().toLocaleTimeString()}</p>
+                                             <p className="text-[5px] font-bold uppercase tracking-widest mt-2 opacity-70">Date: {new Date().toLocaleDateString()} {new Date().toLocaleTimeString()}</p>
                                          </div>
                                          
-                                         <div className="shrink-0 flex flex-col items-center justify-center border-l-2 border-black pl-3 pr-1">
-                                             <div className="p-1 border-2 border-black bg-white mb-1">
-                                                 <QRCode value={`${window.location.hostname === 'localhost' ? 'https://dewey-inventory.vercel.app' : window.location.origin}/inventory/scan?p=${printingBox.pallet.id}`} size={48} level="M" />
-                                             </div>
-                                             <p className="text-[7px] font-black uppercase tracking-widest text-center w-full text-black leading-tight whitespace-pre-wrap">
-                                                 {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 ? "Scan To Register\nBoxes" : "Scan To Register\nItems"}
+                                         <div className="shrink-0 flex flex-col items-center justify-center border-l-2 border-black pl-3 ml-2">
+                                             <QRCode value={`${window.location.hostname === 'localhost' ? 'https://dewey-inventory.vercel.app' : window.location.origin}/inventory/scan?p=${printingBox.pallet.id}`} size={56} level="M" />
+                                             <p className="text-[5px] font-black uppercase tracking-widest text-center w-full text-black leading-none mt-1 whitespace-pre-wrap">
+                                                 {printingBox.pallet.boxes.filter((b: any) => b.name !== 'Loose Items').length > 0 ? "SCAN TO VIEW\nBOXES" : "SCAN TO VIEW\nITEMS"}
                                              </p>
                                          </div>
                                      </div>
