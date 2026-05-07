@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Inventory } from './pages/Inventory/Inventory';
 import { InventoryScan } from './pages/Inventory/InventoryScan';
@@ -8,6 +8,7 @@ import { WaitingRoom } from './pages/Auth/WaitingRoom';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, userData, loading } = useAuth();
+  const location = useLocation();
   
   if (loading || (user && !userData)) {
     return <div className="min-h-screen flex items-center justify-center bg-[#070605] text-white font-serif">Loading...</div>;
@@ -22,7 +23,7 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
-    return <Navigate to="/login" />;
+    return <Navigate to="/login" state={{ from: `${location.pathname}${location.search}` }} />;
   }
   
   return <>{children}</>;
