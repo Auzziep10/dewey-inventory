@@ -635,18 +635,7 @@ export function Inventory() {
      };
   }, [currentWarehouse]);
 
-  if (isMobile) {
-      return (
-          <div className="min-h-screen bg-brand-bg flex flex-col items-center justify-center p-6 text-center">
-              <div className="bg-white p-8 rounded-2xl shadow-xl max-w-sm border border-brand-border">
-                  <h1 className="font-serif text-2xl font-bold tracking-tight mb-4 text-brand-primary">Mobile Scanner</h1>
-                  <p className="text-sm font-medium text-brand-secondary mb-6">
-                      The 3D Warehouse Map is only available on desktop devices. Please use your phone's camera to scan a physical QR code.
-                  </p>
-              </div>
-          </div>
-      );
-  }
+
 
   const [isAddingPallet, setIsAddingPallet] = useState(false);
   const [isInventoryModalOpen, setIsInventoryModalOpen] = useState(false);
@@ -965,6 +954,19 @@ export function Inventory() {
                    </button>
                 </div>
              )}
+          </div>
+      );
+  }
+
+  if (isMobile) {
+      return (
+          <div className="min-h-screen bg-brand-bg flex flex-col items-center justify-center p-6 text-center">
+              <div className="bg-white p-8 rounded-2xl shadow-xl max-w-sm border border-brand-border">
+                  <h1 className="font-serif text-2xl font-bold tracking-tight mb-4 text-brand-primary">Mobile Scanner</h1>
+                  <p className="text-sm font-medium text-brand-secondary mb-6">
+                      The 3D Warehouse Map is only available on desktop devices. Please use your phone's camera to scan a physical QR code.
+                  </p>
+              </div>
           </div>
       );
   }
